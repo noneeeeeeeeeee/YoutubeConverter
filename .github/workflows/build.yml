@@ -1,0 +1,85 @@
+# filepath: c:\dev\Github\YoutubeConverter\.github\workflows\build.yml
+name: build-windows
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build EXE
+        run: |
+          pyinstaller --noconfirm --noconsole ^
+            --name "YoutubeConverter" ^
+            --collect-submodules yt_dlp ^
+            app\main.py
+        shell: cmd
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build Installer
+        run: |
+          set V=0.1.0
+          "%ProgramFiles(x86)%\NSIS\makensis.exe" /DAPP_VERSION=%V% installer\nsis_installer.nsi
+        shell: cmd
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/YoutubeConverter/YoutubeConverter.exe
+            installer/*.exe
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.exe
+          draft: false
+          prerelease: false
+
+  nightly:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: artifacts
+      - name: Publish Nightly Pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly
+          files: artifacts/**/*.exe
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,20 @@
+{
+  "last_download_dir": "C:/Users/JC/Desktop",
+  "ui": {
+    "auto_advance": true,
+    "reset_after_downloads": true,
+    "accent_color_hex": "#ff0000"
+  },
+  "defaults": {
+    "kind": "video",
+    "format": "mp4"
+  },
+  "ytdlp": {
+    "auto_update": true,
+    "branch": "stable"
+  },
+  "app": {
+    "auto_update": true,
+    "channel": "release"
+  }
+}

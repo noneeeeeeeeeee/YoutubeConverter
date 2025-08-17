@@ -19,6 +19,7 @@ class UISettings:
     search_debounce_seconds: int = 3  # New: inactivity time before searching
     fast_paste_enabled: bool = True  # New: use fast paste logic for URLs
     quality_refetch_seconds: int = 1  # New: refetch delay on Quality tab
+    background_metadata_enabled: bool = True  # NEW: fetch metadata in background
 
 
 # Hidden (For first start only)

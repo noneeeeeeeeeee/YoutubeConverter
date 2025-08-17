@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt6.QtWidgets import (
     QWidget,
@@ -37,6 +37,7 @@ class Step1LinkWidget(QWidget):
         self.settings = settings
         self.fetcher = None
         self.selected: List[Dict] = []
+        self._bg_fetchers = {}  # NEW: url -> InfoFetcher for background metadata
 
         # Debounce timer for search-as-you-type
         self.search_timer = QTimer(self)
@@ -205,10 +206,8 @@ class Step1LinkWidget(QWidget):
             return
         # Cancel in-flight fetch when typing resumes
         self._cancel_fetch()
-        # URLs: auto flow
+        # URLs: auto flow (always on now)
         if YOUTUBE_URL_RE.match(q):
-            if not self.settings.ui.auto_fetch_urls:
-                return
             kind, norm = self._classify_url(q)
             if kind == "radio":
                 self.lbl_status.setText("Radio playlists are not supported.")
@@ -265,8 +264,7 @@ class Step1LinkWidget(QWidget):
         if not q:
             return
         if YOUTUBE_URL_RE.match(q):
-            if not self.settings.ui.auto_fetch_urls:
-                return
+            # Always auto-fetch URLs now
             kind, norm = self._classify_url(q)
             if kind == "radio":
                 self.lbl_status.setText("Radio playlists are not supported.")
@@ -284,7 +282,7 @@ class Step1LinkWidget(QWidget):
             if self.settings.ui.auto_search_text:
                 self._start_fetch(f"ytsearch20:{q}")
 
-    def _classify_url(self, url: str) -> (str, str):
+    def _classify_url(self, url: str) -> Tuple[str, str]:
         """
         Returns (kind, normalized_url)
         kind: 'single' | 'playlist' | 'radio' | 'unknown'
@@ -479,141 +477,172 @@ class Step1LinkWidget(QWidget):
             self.selected[idx] = {**self.selected[idx], **info}
         else:
             self.selected.append(info)
+        # NEW: background metadata fetch for this item if enabled
+        if getattr(self.settings.ui, "background_metadata_enabled", True):
+            self._ensure_bg_fetch_for(url)
         self._refresh_selected_list()
         has_selected = self.selected_list.count() > 0
         self.tabs.setTabVisible(self.idx_selected, has_selected)
         if has_selected:
             self.tabs.setCurrentIndex(self.idx_selected)
 
-    def _add_selected(self, info: Dict):
-        # Normalize using upsert (avoid duplicates)
-        if info.get("_type") == "playlist" and info.get("entries"):
-            for e in info["entries"]:
-                if e:
-                    self._upsert_selected(e)
-        else:
-            self._upsert_selected(info)
-        # Selected tab visibility handled in _upsert_selected
+    # NEW: start a bg fetch if item lacks metadata/thumbnail
+    def _needs_metadata(self, it: dict) -> bool:
+        if not it:
+            return True
+        has_core = (
+            bool(it.get("id")) or bool(it.get("duration")) or bool(it.get("extractor"))
+        )
+        has_thumb = bool(it.get("thumbnail")) or bool(it.get("thumbnails"))
+        return not (has_core and has_thumb)
 
-    # NEW: select/deselect all in the current playlist view (batched, fast)
-    def _on_pl_select_all_toggled(self, checked: bool):
-        self.playlist_list.setUpdatesEnabled(False)
-        self.selected_list.setUpdatesEnabled(False)
-        try:
-            # Batch apply without refreshing per item
-            for i in range(self.playlist_list.count()):
-                it = self.playlist_list.item(i)
-                e = it.data(Qt.ItemDataRole.UserRole) or {}
-                u = e.get("webpage_url") or e.get("url")
-                if not u:
-                    continue
-                if checked:
-                    self._upsert_selected_norefresh(e)
-                    self._style_playlist_item(it, True)
-                else:
-                    self._remove_selected_by_url_norefresh(u)
+    def _ensure_bg_fetch_for(self, url: str):
+        if not url or url in self._bg_fetchers:
+            return
+        # Find current info by url
+        it = next(
+            (x for x in self.selected if (x.get("webpage_url") or x.get("url")) == url),
+            None,
+        )
+        if not it or not self._needs_metadata(it):
+            return
+        f = InfoFetcher(url)
+
+        def _ok(meta: dict, u=url):
+            try:
+                # Merge back into selected and keep reference to merged info
+                merged_info = None
+                for i, x in enumerate(self.selected):
+                    xu = x.get("webpage_url") or x.get("url")
+                    if xu == u:
+                        self.selected[i] = {**x, **(meta or {})}
+                        merged_info = self.selected[i]
+                        break
+                # Refresh selected list (title + icon)
+                self._refresh_selected_list()
+                # Also update playlist list icon/title if present
+                if merged_info:
+                    for k in range(self.playlist_list.count()):
+                        pl_item = self.playlist_list.item(k)
+                        data = pl_item.data(Qt.ItemDataRole.UserRole) or {}
+                        du = data.get("webpage_url") or data.get("url")
+                        if du == u:
+                            pl_item.setText(merged_info.get("title") or "Untitled")
+                            pix = self._load_thumb(
+                                merged_info.get("thumbnail")
+                                or (merged_info.get("thumbnails") or [{}])[-1].get(
+                                    "url"
+                                )
+                            )
+                            if pix:
+                                pl_item.setIcon(QIcon(pix))
+                                pl_item.setData(ICON_PIXMAP_ROLE, pix)
+                            break
+            finally:
+                self._bg_fetchers.pop(u, None)
+
+        def _fail(err: str, u=url):
+            self._bg_fetchers.pop(u, None)
+
+        f.finished_ok.connect(_ok)
+        f.finished_fail.connect(_fail)
+        self._bg_fetchers[url] = f
+        f.start()
+
+    def _refresh_selected_list(self):
+        self.selected_list.clear()
+        for it in self.selected:
+            title = it.get("title") or "Untitled"
+            lw = QListWidgetItem(title)
+            thumb = (
+                it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get("url")
+                if isinstance(it, dict)
+                else None
+            )
+            pix = self._load_thumb(thumb)
+            if pix:
+                lw.setIcon(QIcon(pix))
+            lw.setData(Qt.ItemDataRole.UserRole, it)
+            self.selected_list.addItem(lw)
+        self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
+
+    def _on_multi_toggled(self, checked: bool):
+        # Show Next only when multi is enabled
+        self.btn_next.setVisible(checked)
+        if checked:
+            return
+        if self.selected:
+            res = QMessageBox.question(
+                self,
+                "Clear selected",
+                "Are you sure you want to clear videos?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if res == QMessageBox.StandardButton.Yes:
+                self.selected.clear()
+                self._refresh_selected_list()
+                self.tabs.setTabVisible(self.idx_selected, False)
+                # Reset playlist item styling (no items selected anymore)
+                for i in range(self.playlist_list.count()):
+                    it = self.playlist_list.item(i)
                     self._style_playlist_item(it, False)
-            # Single refresh after batch
+                self.lbl_status.setText("")
+            else:
+                # Revert toggle back to ON
+                self.chk_multi.blockSignals(True)
+                self.chk_multi.setChecked(True)
+                self.chk_multi.blockSignals(False)
+
+    def _on_pl_select_all_toggled(self, checked: bool):
+        # NEW: select/deselect all videos from the current playlist view
+        self.playlist_list.setUpdatesEnabled(False)
+        try:
+            if checked:
+                # Add all to selected
+                for i in range(self.playlist_list.count()):
+                    it = self.playlist_list.item(i)
+                    e = it.data(Qt.ItemDataRole.UserRole) or {}
+                    u = e.get("webpage_url") or e.get("url")
+                    if not u:
+                        continue
+                    # upsert
+                    idx = next(
+                        (
+                            k
+                            for k, s in enumerate(self.selected)
+                            if (s.get("webpage_url") or s.get("url")) == u
+                        ),
+                        -1,
+                    )
+                    if idx >= 0:
+                        self.selected[idx] = {**self.selected[idx], **e}
+                    else:
+                        self.selected.append(e)
+                    self._style_playlist_item(it, True)
+                    # Kick background metadata if enabled
+                    if getattr(self.settings.ui, "background_metadata_enabled", True):
+                        self._ensure_bg_fetch_for(u)
+            else:
+                # Remove all from selected
+                urls = []
+                for i in range(self.playlist_list.count()):
+                    it = self.playlist_list.item(i)
+                    e = it.data(Qt.ItemDataRole.UserRole) or {}
+                    u = e.get("webpage_url") or e.get("url")
+                    if not u:
+                        continue
+                    urls.append(u)
+                    self._style_playlist_item(it, False)
+                self.selected = [
+                    s
+                    for s in self.selected
+                    if (s.get("webpage_url") or s.get("url")) not in set(urls)
+                ]
+            # Refresh the Selected tab
             self._refresh_selected_list()
             self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
         finally:
-            self.selected_list.setUpdatesEnabled(True)
             self.playlist_list.setUpdatesEnabled(True)
-
-    # Utils: grayscale and icon styling
-    def _to_gray(self, pix: QPixmap) -> QPixmap:
-        try:
-            img = pix.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
-            return QPixmap.fromImage(img)
-        except Exception:
-            return pix
-
-    def _apply_icon_style(self, item: QListWidgetItem, selected: bool):
-        pix = item.data(ICON_PIXMAP_ROLE)
-        if isinstance(pix, QPixmap):
-            if selected:
-                item.setIcon(QIcon(pix))
-            else:
-                item.setIcon(QIcon(self._to_gray(pix)))
-
-    def _style_playlist_item(self, item: QListWidgetItem, selected: bool):
-        # color and icon style
-        if selected:
-            item.setForeground(QColor(self.settings.ui.accent_color_hex))
-        else:
-            item.setForeground(QColor("#8a8b90"))
-        self._apply_icon_style(item, selected)
-
-    # Internal helpers for batch ops (no refresh)
-    def _selected_index_by_url(self, url: str) -> int:
-        return next(
-            (
-                i
-                for i, it in enumerate(self.selected)
-                if (it.get("webpage_url") or it.get("url")) == url
-            ),
-            -1,
-        )
-
-    def _upsert_selected_norefresh(self, info: Dict):
-        url = (info or {}).get("webpage_url") or (info or {}).get("url")
-        if not url:
-            return
-        idx = self._selected_index_by_url(url)
-        if idx >= 0:
-            self.selected[idx] = {**self.selected[idx], **info}
-        else:
-            self.selected.append(info)
-
-    def _remove_selected_by_url_norefresh(self, url: str):
-        if not url:
-            return
-        self.selected = [
-            x for x in self.selected if (x.get("webpage_url") or x.get("url")) != url
-        ]
-
-    def _info_fail(self, err: str):
-        # Show error and allow another attempt
-        self.lbl_status.setText(f"Error: {err}")
-
-    def _toggle_from_results(self, item: QListWidgetItem):
-        data = item.data(Qt.ItemDataRole.UserRole) or {}
-        url = data.get("webpage_url") or data.get("url")
-        title = data.get("title") or "Unknown title"
-        if not url:
-            return
-        # If already selected -> prompt to remove
-        idx = next(
-            (
-                i
-                for i, it in enumerate(self.selected)
-                if (it.get("webpage_url") or it.get("url")) == url
-            ),
-            -1,
-        )
-        if idx >= 0:
-            if (
-                QMessageBox.question(
-                    self, "Remove video", f"Remove '{title}' from selected?"
-                )
-                == QMessageBox.StandardButton.Yes
-            ):
-                self.selected.pop(idx)
-                self._refresh_selected_list()
-            return
-        # Do not block on yt-dlp fetch; add/advance immediately
-        info = {
-            "webpage_url": url,
-            "url": url,
-            "title": title,
-            "thumbnail": data.get("thumbnail"),
-            "thumbnails": data.get("thumbnails"),
-        }
-        if not self.chk_multi.isChecked():  # auto-advance always when not multi
-            self.urlDetected.emit(info)
-            self.requestAdvance.emit({"url": url, "info": info, "is_playlist": False})
-        else:
-            self._add_selected(info)
 
     def _toggle_from_playlist(self, item: QListWidgetItem):
         info = item.data(Qt.ItemDataRole.UserRole) or {}
@@ -642,92 +671,82 @@ class Step1LinkWidget(QWidget):
             self._refresh_selected_list()
             self._style_playlist_item(item, True)
 
-    def _is_selected(self, info: Dict) -> bool:
-        u = info.get("webpage_url") or info.get("url")
-        return any(
-            (it.get("webpage_url") or it.get("url")) == u for it in self.selected
-        )
-
-    def _add_selected(self, info: Dict):
-        # Normalize
-        if info.get("_type") == "playlist" and info.get("entries"):
-            for e in info["entries"]:
-                if e:
-                    self.selected.append(e)
-        else:
-            self.selected.append(info)
-        # After updating, toggle Selected tab visibility
-        self._refresh_selected_list()
-        has_selected = self.selected_list.count() > 0
-        self.tabs.setTabVisible(self.idx_selected, has_selected)
-        if has_selected:
-            self.tabs.setCurrentIndex(self.idx_selected)
-
-    def _refresh_selected_list(self):
-        self.selected_list.clear()
-        for it in self.selected:
-            title = it.get("title") or "Untitled"
-            lw = QListWidgetItem(title)
-            thumb = (
-                it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get("url")
-                if isinstance(it, dict)
-                else None
-            )
-            pix = self._load_thumb(thumb)
-            if pix:
-                lw.setIcon(QIcon(pix))
-            lw.setData(Qt.ItemDataRole.UserRole, it)
-            self.selected_list.addItem(lw)
-        # Update Selected tab visibility
-        self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
-
-    def _remove_from_selected_prompt(self, item: QListWidgetItem):
-        info = item.data(Qt.ItemDataRole.UserRole) or {}
-        title = info.get("title") or "Untitled"
-        if (
-            QMessageBox.question(
-                self, "Remove video", f"Remove '{title}' from selected?"
-            )
-            == QMessageBox.StandardButton.Yes
-        ):
-            url = info.get("webpage_url") or info.get("url")
-            self.selected = [
-                it
-                for it in self.selected
-                if (it.get("webpage_url") or it.get("url")) != url
-            ]
-            self._refresh_selected_list()
-
-    def _confirm_selection(self):
-        # Cancel any in-flight fetch before advancing
-        if self.fetcher and self.fetcher.isRunning():
-            try:
-                self.fetcher.terminate()
-                self.fetcher.wait(1000)
-            except Exception:
-                pass
-            finally:
-                self.fetcher = None
-                self.lbl_status.setText("Cancelled.")
-        if not self.selected:
+    def _toggle_from_results(self, item: QListWidgetItem):
+        data = item.data(Qt.ItemDataRole.UserRole) or {}
+        url = data.get("webpage_url") or data.get("url")
+        title = data.get("title") or "Unknown title"
+        if not url:
             return
-        self.selectionConfirmed.emit(self.selected[:])
+        # If already selected -> prompt to remove
+        idx = next(
+            (
+                i
+                for i, it in enumerate(self.selected)
+                if (it.get("webpage_url") or it.get("url")) == url
+            ),
+            -1,
+        )
+        if idx >= 0:
+            if (
+                QMessageBox.question(
+                    self, "Remove video", f"Remove '{title}' from selected?"
+                )
+                == QMessageBox.StandardButton.Yes
+            ):
+                self.selected.pop(idx)
+                self._refresh_selected_list()
+            return
+        # Add or auto-advance
+        info = {
+            "webpage_url": url,
+            "url": url,
+            "title": title,
+            "thumbnail": data.get("thumbnail"),
+            "thumbnails": data.get("thumbnails"),
+        }
+        if not self.chk_multi.isChecked():
+            self.urlDetected.emit(info)
+            self.requestAdvance.emit({"url": url, "info": info, "is_playlist": False})
+        else:
+            # Upsert to selected and trigger bg metadata if enabled
+            self._upsert_selected(info)
+            if getattr(self.settings.ui, "background_metadata_enabled", True):
+                self._ensure_bg_fetch_for(url)
 
-    def _load_thumb(self, url: str):
+    # Small helper: safely load a thumbnail QPixmap from URL (returns None on any error)
+    def _load_thumb(self, url):
         if not url:
             return None
         try:
-            import requests
+            from urllib.request import urlopen
 
-            r = requests.get(url, timeout=6)
-            if not r.ok:
-                return None
+            data = urlopen(url, timeout=5).read()
             pix = QPixmap()
-            if pix.loadFromData(r.content):
+            if pix.loadFromData(data):
                 return pix
         except Exception:
-            return None
+            pass
         return None
+
+    # Utils: grayscale and icon styling (used by playlist list items)
+    def _to_gray(self, pix: QPixmap) -> QPixmap:
+        try:
+            img = pix.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            return QPixmap.fromImage(img)
+        except Exception:
+            return pix
+
+    def _apply_icon_style(self, item: QListWidgetItem, selected: bool):
+        pix = item.data(ICON_PIXMAP_ROLE)
+        if isinstance(pix, QPixmap):
+            item.setIcon(QIcon(pix if selected else self._to_gray(pix)))
+
+    def _style_playlist_item(self, item: QListWidgetItem, selected: bool):
+        if selected:
+            item.setForeground(QColor(self.settings.ui.accent_color_hex))
+        else:
+            item.setForeground(QColor("#8a8b90"))
+        self._apply_icon_style(item, selected)
 
     def reset(self):
         # Cancel any in-flight fetch
@@ -755,78 +774,40 @@ class Step1LinkWidget(QWidget):
         self._suppress_auto = False
         self.search_timer.stop()
 
-    def _on_multi_toggled(self, checked: bool):
-        # Show Next only when multi is enabled
-        self.btn_next.setVisible(checked)
-        if checked:
+    # Handle clicks on the "Selected Videos" list: prompt and remove
+    def _remove_from_selected_prompt(self, item: QListWidgetItem):
+        info = item.data(Qt.ItemDataRole.UserRole) or {}
+        url = info.get("webpage_url") or info.get("url")
+        title = info.get("title") or "Untitled"
+        if not url:
             return
-        if self.selected:
-            res = QMessageBox.question(
-                self,
-                "Clear selected",
-                "Are you sure you want to clear videos?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        if (
+            QMessageBox.question(
+                self, "Remove video", f"Remove '{title}' from selected?"
             )
-            if res == QMessageBox.StandardButton.Yes:
-                self.selected.clear()
-                self._refresh_selected_list()
-                self.tabs.setTabVisible(self.idx_selected, False)
-                # Reset playlist item styling (no items selected anymore)
-                for i in range(self.playlist_list.count()):
-                    it = self.playlist_list.item(i)
-                    self._style_playlist_item(it, False)
-                self.lbl_status.setText("")
-            else:
-                # Revert toggle back to ON
-                self.chk_multi.blockSignals(True)
-                self.chk_multi.setChecked(True)
-                self.chk_multi.blockSignals(False)
-        self.btn_next.setVisible(checked)
-        if checked:
-            return
-        if self.selected:
-            res = QMessageBox.question(
-                self,
-                "Clear selected",
-                "Are you sure you want to clear videos?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if res == QMessageBox.StandardButton.Yes:
-                self.selected.clear()
-                self._refresh_selected_list()
-                self.tabs.setTabVisible(self.idx_selected, False)
-                for i in range(self.playlist_list.count()):
-                    it = self.playlist_list.item(i)
-                    self._style_playlist_item(it, False)
-                self.lbl_status.setText("")
-            else:
-                self.chk_multi.blockSignals(True)
-                self.chk_multi.setChecked(True)
-                self.chk_multi.blockSignals(False)
+            == QMessageBox.StandardButton.Yes
+        ):
+            # Remove from selection
+            self.selected = [
+                it
+                for it in self.selected
+                if (it.get("webpage_url") or it.get("url")) != url
+            ]
+            self._refresh_selected_list()
+            # Update playlist styling for this item, if present there
+            for i in range(self.playlist_list.count()):
+                pit = self.playlist_list.item(i)
+                pdata = pit.data(Qt.ItemDataRole.UserRole) or {}
+                pu = pdata.get("webpage_url") or pdata.get("url")
+                if pu == url:
+                    self._style_playlist_item(pit, False)
+                    break
+            # Hide tab if empty
+            self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
 
-        # NOTE: removed duplicate definitions of _paste, _style_playlist_item (non-grayscale),
-        # and the older minimal reset() to avoid redefinitions.
-        if checked:
+    # "Next" in multi-select mode: emit all selected infos
+    def _confirm_selection(self):
+        if not self.selected:
+            QMessageBox.information(self, "No videos", "No videos selected.")
             return
-        if self.selected:
-            res = QMessageBox.question(
-                self,
-                "Clear selected",
-                "Are you sure you want to clear videos?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if res == QMessageBox.StandardButton.Yes:
-                # Clear selected list and update UI
-                self.selected.clear()
-                self._refresh_selected_list()
-                self.tabs.setTabVisible(self.idx_selected, False)
-                # Reset playlist item styling (no items selected anymore)
-                for i in range(self.playlist_list.count()):
-                    it = self.playlist_list.item(i)
-                    self._style_playlist_item(it, False)
-                self.lbl_status.setText("")
-            else:
-                # Revert toggle back to ON
-                self.chk_multi.blockSignals(True)
-                self.chk_multi.setChecked(True)
-                self.chk_multi.blockSignals(False)
+        self.selectionConfirmed.emit(list(self.selected))

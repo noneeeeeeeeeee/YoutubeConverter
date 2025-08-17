@@ -12,12 +12,13 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QPushButton,
     QFrame,
+    QScrollArea,  # added
 )
 
 from core.settings import SettingsManager, AppSettings
 from core.ffmpeg_manager import FfmpegInstaller, ensure_ffmpeg_in_path
-from core.yt_manager import YtDlpUpdateWorker, AppUpdateWorker
-from core.yt_manager import InfoFetcher  # added
+from core.update import YtDlpUpdateWorker, AppUpdateWorker  # CHANGED: moved here
+from core.yt_manager import InfoFetcher  # kept
 from ui.style import StyleManager
 from ui.stepper import Stepper
 from ui.toast import ToastManager
@@ -26,7 +27,20 @@ from widgets.step3_quality import Step3QualityWidget
 from widgets.step4_downloads import Step4DownloadsWidget
 from widgets.settings_page import SettingsPage
 
-APP_VERSION = "0.1-Beta"
+
+def _read_version_from_file() -> str:
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        ver_path = os.path.join(here, "version.txt")
+        if os.path.exists(ver_path):
+            with open(ver_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return ""
+
+
+APP_VERSION = _read_version_from_file() or "0.1-Beta"
 APP_REPO = "noneeeeeeeeeee/YoutubeConverter"
 
 
@@ -127,9 +141,24 @@ class MainWindow(QMainWindow):
         flow_layout.addWidget(self.flow_stack)
 
         # Settings page
-        self.settings_page = SettingsPage(self.settings)  # NEW
+        self.settings_page = SettingsPage(self.settings)  # inner widget
+
+        # Make settings scrollable
+        self.settings_scroll = QScrollArea()
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setObjectName("SettingsScrollArea")
+        self.settings_scroll.setWidget(self.settings_page)
+        # Flatten look: remove border/frame, keep scrollbar
+        self.settings_scroll.setFrameShape(QFrame.Shape.NoFrame)  # NEW
+        self.settings_scroll.setStyleSheet(  # NEW
+            "QScrollArea { border: none; background: transparent; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+        )
+
         self.stack.addWidget(self.page_flow)
-        self.stack.addWidget(self.settings_page)  # NEW
+        self.stack.addWidget(
+            self.settings_scroll
+        )  # add scroll area instead of raw page
 
     def _wire_signals(self):
         self.btn_home.clicked.connect(lambda: self.stack.setCurrentIndex(0))
@@ -152,7 +181,7 @@ class MainWindow(QMainWindow):
             lambda: (self.flow_stack.setCurrentIndex(1), self.stepper.set_current(1))
         )
 
-        # Settings page signals
+        # Settings page signals (connect on inner widget)
         self.settings_page.changed.connect(self._settings_changed)  # NEW
         self.settings_page.accentPickRequested.connect(self._pick_accent)  # NEW
         self.settings_page.checkYtDlpRequested.connect(self._check_ytdlp_updates)  # NEW

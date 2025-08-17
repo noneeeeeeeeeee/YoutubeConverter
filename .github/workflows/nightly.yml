@@ -1,0 +1,45 @@
+name: Nightly Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-nightly:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          if exist requirements.txt ( pip install -r requirements.txt )
+
+      - name: Build EXE
+        run: pyinstaller main.py --onefile --windowed
+
+      - name: Prepare package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path YoutubeConverter | Out-Null
+          Copy-Item -Path dist\main.exe -Destination YoutubeConverter\YoutubeConverter.exe
+          if (Test-Path version.txt) { Copy-Item version.txt YoutubeConverter\version.txt } else { '0.0.0' | Out-File -Encoding ascii YoutubeConverter\version.txt }
+          Compress-Archive -Path YoutubeConverter\* -DestinationPath YoutubeConverter-nightly.zip
+
+      - name: Upload Nightly Pre-release
+        uses: marvinpinto/action-automatic-releases@latest
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: nightly
+          prerelease: true
+          title: "Nightly Build"
+          files: |
+            YoutubeConverter-nightly.zip

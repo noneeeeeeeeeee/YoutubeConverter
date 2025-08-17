@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QPushButton,
     QSpinBox,
+    QLabel,
 )
 from core.settings import AppSettings
 
@@ -24,20 +25,38 @@ class SettingsPage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
 
+        # Note
+        grp_note = QGroupBox("Note")
+        frm_note = QFormLayout(grp_note)
+        frm_note.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        frm_note.addRow(
+            QLabel(
+                "The following settings have not been tested with the toggle modified: Clear input after fetch, Auto search text, Live search while typing. Use with caution!"
+            )
+        )
+        frm_note.addRow(
+            QLabel(
+                "If anything is bricked, delete the settings.json and it will reset everything back."
+            )
+        )
+        lay.addWidget(grp_note)
+
         # General
         grp_general = QGroupBox("General")
         frm_general = QFormLayout(grp_general)
         frm_general.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.chk_auto_fetch_urls = QCheckBox()
-        self.chk_auto_fetch_urls.setChecked(settings.ui.auto_fetch_urls)
-        frm_general.addRow("Auto fetch URLs", self.chk_auto_fetch_urls)
 
         self.chk_fast_paste = QCheckBox()
         self.chk_fast_paste.setChecked(getattr(settings.ui, "fast_paste_enabled", True))
         frm_general.addRow(
             "Fast paste (URL adds/advances instantly)", self.chk_fast_paste
         )
+
+        self.chk_bg_meta = QCheckBox()  # NEW
+        self.chk_bg_meta.setChecked(
+            getattr(settings.ui, "background_metadata_enabled", True)
+        )
+        frm_general.addRow("Background metadata fetching", self.chk_bg_meta)  # NEW
 
         self.chk_clear_after_fetch = QCheckBox()
         self.chk_clear_after_fetch.setChecked(settings.ui.clear_input_after_fetch)
@@ -71,20 +90,6 @@ class SettingsPage(QWidget):
 
         lay.addWidget(grp_search)
 
-        # Quality
-        grp_quality = QGroupBox("Quality")
-        frm_quality = QFormLayout(grp_quality)
-        frm_quality.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.spn_quality_refetch = QSpinBox()
-        self.spn_quality_refetch.setRange(0, 30)
-        self.spn_quality_refetch.setValue(
-            int(getattr(settings.ui, "quality_refetch_seconds", 1))
-        )
-        frm_quality.addRow("Refetch metadata delay (s)", self.spn_quality_refetch)
-
-        lay.addWidget(grp_quality)
-
         # yt-dlp
         grp_ytdlp = QGroupBox("yt-dlp")
         frm_ytdlp = QFormLayout(grp_ytdlp)
@@ -115,7 +120,7 @@ class SettingsPage(QWidget):
         frm_app.addRow("Auto-update app", self.chk_app_auto)
 
         self.cmb_app_channel = QComboBox()
-        self.cmb_app_channel.addItems(["release", "prerelease"])
+        self.cmb_app_channel.addItems(["release", "prerelease", "nightly"])  # NEW
         self.cmb_app_channel.setCurrentText(settings.app.channel)
         frm_app.addRow("Update channel", self.cmb_app_channel)
 
@@ -128,8 +133,8 @@ class SettingsPage(QWidget):
 
         # Change handlers
         for w in (
-            self.chk_auto_fetch_urls,
             self.chk_fast_paste,
+            self.chk_bg_meta,  # NEW
             self.chk_clear_after_fetch,
             self.chk_auto_search_text,
             self.chk_live_search,
@@ -138,18 +143,16 @@ class SettingsPage(QWidget):
         ):
             w.toggled.connect(self.changed.emit)
         self.spn_search_debounce.valueChanged.connect(self.changed.emit)
-        self.spn_quality_refetch.valueChanged.connect(self.changed.emit)
         self.cmb_ytdlp_branch.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_channel.currentTextChanged.connect(self.changed.emit)
 
     def apply_to(self, settings: AppSettings):
-        settings.ui.auto_fetch_urls = self.chk_auto_fetch_urls.isChecked()
         settings.ui.fast_paste_enabled = self.chk_fast_paste.isChecked()
+        settings.ui.background_metadata_enabled = self.chk_bg_meta.isChecked()
         settings.ui.clear_input_after_fetch = self.chk_clear_after_fetch.isChecked()
         settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
         settings.ui.live_search = self.chk_live_search.isChecked()
         settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
-        settings.ui.quality_refetch_seconds = int(self.spn_quality_refetch.value())
         settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
         settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
         settings.app.auto_update = self.chk_app_auto.isChecked()

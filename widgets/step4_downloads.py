@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 
 from core.settings import AppSettings, SettingsManager
 from core.ffmpeg_manager import FF_EXE, FF_DIR
-from core.yt_manager import Downloader
+from core.yt_manager import Downloader, InfoFetcher  # add InfoFetcher
 
 
 class DownloadItemWidget(QWidget):
@@ -63,6 +63,7 @@ class Step4DownloadsWidget(QWidget):
         self.fmt = "mp3"
         self.quality = "best"
         self.downloader: Optional[Downloader] = None
+        self._meta_fetchers: dict[int, InfoFetcher] = {}  # NEW: idx -> fetcher
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -104,14 +105,29 @@ class Step4DownloadsWidget(QWidget):
 
     def _populate(self):
         self.list.clear()
-        for it in self.items:
+        for idx, it in enumerate(self.items):
             title = it.get("title") or "Untitled"
             w = DownloadItemWidget(title)
-            # NEW: pre-start status reflects metadata state
+            # Pre-start status reflects metadata state
             if self._needs_metadata(it):
                 w.status.setText("Fetching metadata...")
             else:
                 w.status.setText("Waiting...")
+            # NEW: show thumbnail if already available
+            thumb_url = it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get(
+                "url"
+            )
+            if thumb_url:
+                try:
+                    import requests
+
+                    r = requests.get(thumb_url, timeout=6)
+                    if r.ok:
+                        pix = QPixmap()
+                        if pix.loadFromData(r.content):
+                            w.thumb.setPixmap(pix)
+                except Exception:
+                    pass
             item = QListWidgetItem()
             item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
@@ -119,6 +135,58 @@ class Step4DownloadsWidget(QWidget):
         self.btn_start.setEnabled(True)
         self.btn_done.setVisible(False)
         self.btn_stop.setEnabled(False)
+
+        # NEW: background metadata fetching before Start if enabled
+        if getattr(self.settings.ui, "background_metadata_enabled", True):
+            self._start_bg_metadata()
+
+    def _start_bg_metadata(self):
+        # Start InfoFetcher for items lacking metadata; update UI on completion
+        for idx, it in enumerate(self.items):
+            if not self._needs_metadata(it) or idx in self._meta_fetchers:
+                continue
+            url = it.get("webpage_url") or it.get("url")
+            if not url:
+                continue
+            f = InfoFetcher(url)
+
+            def _ok(meta: dict, i=idx):
+                try:
+                    self.items[i] = {**self.items[i], **(meta or {})}
+                    w = self._get_widget(i)
+                    if w:
+                        # Update title and thumbnail
+                        title = self.items[i].get("title") or "Untitled"
+                        w.title.setText(title)
+                        turl = self.items[i].get("thumbnail") or (
+                            self.items[i].get("thumbnails") or [{}]
+                        )[-1].get("url")
+                        if turl:
+                            try:
+                                import requests
+
+                                r = requests.get(turl, timeout=6)
+                                if r.ok:
+                                    px = QPixmap()
+                                    if px.loadFromData(r.content):
+                                        w.thumb.setPixmap(px)
+                            except Exception:
+                                pass
+                        # Keep status: will change on Start
+                        if self._needs_metadata(self.items[i]):
+                            w.status.setText("Fetching metadata...")
+                        else:
+                            w.status.setText("Waiting...")
+                finally:
+                    self._meta_fetchers.pop(i, None)
+
+            def _fail(err: str, i=idx):
+                self._meta_fetchers.pop(i, None)
+
+            f.finished_ok.connect(_ok)
+            f.finished_fail.connect(_fail)
+            self._meta_fetchers[idx] = f
+            f.start()
 
     # NEW: small helper to mirror Downloader heuristic
     def _needs_metadata(self, it: dict) -> bool:

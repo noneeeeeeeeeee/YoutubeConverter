@@ -125,10 +125,11 @@ class Step3QualityWidget(QWidget):
 
         # Refresh quality options according to current kind
         self._populate_quality_options()
-
-        # NEW: start background metadata fetch immediately
-        self._start_refetch_missing()
-        # Optional: no delayed refetch here anymore
+        # Background metadata only if enabled
+        if getattr(self.settings.ui, "background_metadata_enabled", True):
+            self._start_refetch_missing()
+        else:
+            self._cleanup_fetchers()
         self._refetch_timer.stop()
 
     def _load_thumb(self, it: Dict):
@@ -210,8 +211,9 @@ class Step3QualityWidget(QWidget):
             self.cmb_quality.addItems(opts)
 
     def _start_refetch_missing(self):
-        # Start re-fetch for items without formats; cancel any previous attempts
         self._cleanup_fetchers()
+        if not getattr(self.settings.ui, "background_metadata_enabled", True):
+            return
         for it in self.items:
             if self._has_formats(it):
                 continue
@@ -220,22 +222,21 @@ class Step3QualityWidget(QWidget):
                 continue
             f = InfoFetcher(url)
 
-            # capture url for closure
             def _ok(meta, url=url):
                 idx = self._url_index.get(url, -1)
                 if idx >= 0 and isinstance(meta, dict):
-                    # Merge and update
                     self.items[idx] = {**self.items[idx], **meta}
-                    # Update preview title
                     title = self.items[idx].get("title") or "Untitled"
                     lw = self.preview.item(idx)
                     if lw:
                         lw.setText(title)
-                    # Refresh quality options to show full list when available
+                        # Update icon when thumbnail becomes available
+                        pix = self._load_thumb(self.items[idx])
+                        if pix:
+                            lw.setIcon(QIcon(pix))
                     self._populate_quality_options()
 
             def _fail(err):
-                # Ignore; user can proceed with best/worse or defaults
                 pass
 
             f.finished_ok.connect(_ok)

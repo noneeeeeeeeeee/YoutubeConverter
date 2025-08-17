@@ -27,11 +27,11 @@ jobs:
           pip install pyinstaller
           if (Test-Path requirements.txt) { pip install -r requirements.txt }
           # Ensure runtime deps for build
-          pip install PyQt6 yt-dlp requests
+          pip install PyQt6 yt-dlp requests certifi
 
       - name: Build EXE
         shell: pwsh
-        run: pyinstaller main.py --onefile --windowed
+        run: pyinstaller main.py --onefile --windowed --collect-data certifi
 
       - name: Prepare Nightly package
         id: nightly_pkg
@@ -53,10 +53,10 @@ jobs:
           $safe = $ver -replace '[^\w\.\-]','_'
           $verZip = "YoutubeConverter_$safe.zip"
           Compress-Archive -Path YoutubeConverter\* -DestinationPath $verZip -Force
-          # outputs
-          echo "nightly_zip=$nightlyZip" >> $env:GITHUB_OUTPUT
-          echo "ver_zip=$verZip" >> $env:GITHUB_OUTPUT
-          echo "ver=$ver" >> $env:GITHUB_OUTPUT
+          # outputs via Environment Files (PowerShell-safe)
+          "nightly_zip=$nightlyZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "ver_zip=$verZip"       | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "ver=$ver"              | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload Nightly Pre-release
         uses: marvinpinto/action-automatic-releases@latest
@@ -75,6 +75,28 @@ jobs:
           config-name: release-drafter.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set draft title/tag from version.txt
+        uses: actions/github-script@v7
+        env:
+          REL_ID: ${{ steps.draft.outputs.id }}
+          VER: ${{ steps.nightly_pkg.outputs.ver }}
+        with:
+          script: |
+            const release_id = process.env.REL_ID;
+            const ver = process.env.VER;
+            if (!release_id || !ver) {
+              core.info('Release ID or version missing; skipping rename.');
+            } else {
+              await github.request('PATCH /repos/{owner}/{repo}/releases/{release_id}', {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id,
+                tag_name: `v${ver}`,
+                name: `v${ver}`,
+              });
+              core.info(`Draft release updated to v${ver}`);
+            }
 
       - name: Upload asset to Draft Release
         uses: actions/upload-release-asset@v1

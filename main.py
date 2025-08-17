@@ -15,6 +15,14 @@ from PyQt6.QtWidgets import (
     QScrollArea,  # added
 )
 
+try:
+    import certifi
+
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except Exception:
+    pass
+
 from core.settings import SettingsManager, AppSettings
 from core.ffmpeg_manager import FfmpegInstaller, ensure_ffmpeg_in_path
 from core.update import YtDlpUpdateWorker, AppUpdateWorker  # CHANGED: moved here
@@ -40,7 +48,7 @@ def _read_version_from_file() -> str:
     return ""
 
 
-APP_VERSION = _read_version_from_file() or "0.1-Beta"
+APP_VERSION = _read_version_from_file() or "Unknown"
 APP_REPO = "noneeeeeeeeeee/YoutubeConverter"
 
 

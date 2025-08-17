@@ -107,6 +107,11 @@ class Step4DownloadsWidget(QWidget):
         for it in self.items:
             title = it.get("title") or "Untitled"
             w = DownloadItemWidget(title)
+            # NEW: pre-start status reflects metadata state
+            if self._needs_metadata(it):
+                w.status.setText("Fetching metadata...")
+            else:
+                w.status.setText("Waiting...")
             item = QListWidgetItem()
             item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
@@ -114,6 +119,18 @@ class Step4DownloadsWidget(QWidget):
         self.btn_start.setEnabled(True)
         self.btn_done.setVisible(False)
         self.btn_stop.setEnabled(False)
+
+    # NEW: small helper to mirror Downloader heuristic
+    def _needs_metadata(self, it: dict) -> bool:
+        if not it:
+            return True
+        if not it.get("url") and not it.get("webpage_url"):
+            return False
+        has_core = (
+            bool(it.get("id")) or bool(it.get("duration")) or bool(it.get("extractor"))
+        )
+        has_thumb = bool(it.get("thumbnail")) or bool(it.get("thumbnails"))
+        return not (has_core and has_thumb)
 
     def _toggle_start_pause(self):
         if not self.downloader:
@@ -166,6 +183,11 @@ class Step4DownloadsWidget(QWidget):
         w = self._get_widget(idx)
         if w:
             w.status.setText(text)
+            # NEW: update the title when metadata becomes ready
+            if text.startswith("Metadata ready:"):
+                # Extract after colon
+                new_title = text.split(":", 1)[-1].strip() or "Untitled"
+                w.title.setText(new_title)
 
     def _on_item_progress(
         self, idx: int, percent: float, speed: float, eta: Optional[int]

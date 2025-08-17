@@ -17,6 +17,8 @@ class UISettings:
     clear_input_after_fetch: bool = True
     live_search: bool = True  # New: debounce live search while typing
     search_debounce_seconds: int = 3  # New: inactivity time before searching
+    fast_paste_enabled: bool = True  # New: use fast paste logic for URLs
+    quality_refetch_seconds: int = 1  # New: refetch delay on Quality tab
 
 
 # Hidden (For first start only)

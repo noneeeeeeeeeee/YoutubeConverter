@@ -33,7 +33,7 @@ QPushButton:checked {{
     background: #2d2e33;
 }}
 /* Remove focus outline */
-QPushButton:focus, QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{
+QPushButton:focus, QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QCheckBox:focus, QRadioButton:focus {{
     outline: 0; border: 1px solid #34353b;
 }}
 QPushButton#IconButton {{ font-size: 18px; padding: 0; }}

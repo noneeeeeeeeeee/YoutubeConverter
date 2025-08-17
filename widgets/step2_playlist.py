@@ -10,7 +10,9 @@ from PyQt6.QtWidgets import (
     QLabel,
     QCheckBox,
 )
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QIcon, QPixmap, QImage
+
+ICON_PIXMAP_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
 class Step2PlaylistWidget(QWidget):
@@ -48,6 +50,7 @@ class Step2PlaylistWidget(QWidget):
         self.btn_back.clicked.connect(self.backRequested.emit)
         self.chk_all.stateChanged.connect(self._toggle_all)
         self.btn_next.clicked.connect(self._confirm)
+        self.list.itemChanged.connect(self._on_item_changed)  # NEW
 
     def set_entries(self, entries: List[Dict]):
         self.list.clear()
@@ -57,12 +60,13 @@ class Step2PlaylistWidget(QWidget):
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             it.setCheckState(Qt.CheckState.Checked)
             it.setData(Qt.ItemDataRole.UserRole, e)
-            # thumbnail icon
             pix = self._load_thumb(e)
             if pix:
                 it.setIcon(QIcon(pix))
+                it.setData(ICON_PIXMAP_ROLE, pix)
             self.list.addItem(it)
-        self.lbl.setText(f"Selected {self.list.count()} item(s)")
+            self._apply_item_style(it)  # ensure correct initial icon
+        self._update_selected_label()
 
     def _load_thumb(self, e: Dict):
         url = e.get("thumbnail") or (e.get("thumbnails") or [{}])[-1].get("url")
@@ -81,15 +85,47 @@ class Step2PlaylistWidget(QWidget):
             return None
         return None
 
+    def _to_gray(self, pix: QPixmap) -> QPixmap:
+        try:
+            img = pix.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            return QPixmap.fromImage(img)
+        except Exception:
+            return pix
+
+    def _apply_item_style(self, it: QListWidgetItem):
+        pix = it.data(ICON_PIXMAP_ROLE)
+        if not isinstance(pix, QPixmap):
+            return
+        if it.checkState() == Qt.CheckState.Checked:
+            it.setIcon(QIcon(pix))
+        else:
+            it.setIcon(QIcon(self._to_gray(pix)))
+
+    def _on_item_changed(self, it: QListWidgetItem):
+        self._apply_item_style(it)
+        self._update_selected_label()
+
     def _toggle_all(self, state):
         check = (
             Qt.CheckState.Checked
             if state == Qt.CheckState.Checked
             else Qt.CheckState.Unchecked
         )
+        self.list.blockSignals(True)  # avoid per-item itemChanged storms
         for i in range(self.list.count()):
             it = self.list.item(i)
             it.setCheckState(check)
+            self._apply_item_style(it)
+        self.list.blockSignals(False)
+        self._update_selected_label()
+
+    def _update_selected_label(self):
+        count = sum(
+            1
+            for i in range(self.list.count())
+            if self.list.item(i).checkState() == Qt.CheckState.Checked
+        )
+        self.lbl.setText(f"Selected {count} item(s)")
 
     def _confirm(self):
         out = []

@@ -12,19 +12,19 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QPushButton,
     QFrame,
-    QGroupBox,
-    QSpinBox,
 )
 
 from core.settings import SettingsManager, AppSettings
 from core.ffmpeg_manager import FfmpegInstaller, ensure_ffmpeg_in_path
 from core.yt_manager import YtDlpUpdateWorker, AppUpdateWorker
+from core.yt_manager import InfoFetcher  # added
 from ui.style import StyleManager
 from ui.stepper import Stepper
 from ui.toast import ToastManager
 from widgets.step1_link import Step1LinkWidget
 from widgets.step3_quality import Step3QualityWidget
 from widgets.step4_downloads import Step4DownloadsWidget
+from widgets.settings_page import SettingsPage
 
 APP_VERSION = "0.1-Beta"
 APP_REPO = "noneeeeeeeeeee/YoutubeConverter"
@@ -81,6 +81,8 @@ class MainWindow(QMainWindow):
         # Initialize steps display
         self._refresh_stepper_titles()
 
+        self._bg_fetcher = None  # background fetcher for fast-add on downloads
+
     def _build_sidebar(self) -> QWidget:
         side = QFrame()
         side.setObjectName("Sidebar")
@@ -125,137 +127,40 @@ class MainWindow(QMainWindow):
         flow_layout.addWidget(self.flow_stack)
 
         # Settings page
-        self.page_settings = self._build_settings_page()
-
+        self.settings_page = SettingsPage(self.settings)  # NEW
         self.stack.addWidget(self.page_flow)
-        self.stack.addWidget(self.page_settings)
-
-    def _build_settings_page(self) -> QWidget:
-        from PyQt6.QtWidgets import QFormLayout, QCheckBox, QComboBox, QColorDialog
-
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(16, 16, 16, 16)
-
-        # General group
-        grp_general = QGroupBox("General")
-        frm_general = QFormLayout(grp_general)
-        frm_general.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.chk_auto_advance = QCheckBox()
-        self.chk_auto_advance.setChecked(self.settings.ui.auto_advance)
-        frm_general.addRow("Auto-advance", self.chk_auto_advance)
-
-        self.chk_auto_fetch_urls = QCheckBox()
-        self.chk_auto_fetch_urls.setChecked(self.settings.ui.auto_fetch_urls)
-        frm_general.addRow("Auto fetch URLs", self.chk_auto_fetch_urls)
-
-        self.chk_auto_search_text = QCheckBox()
-        self.chk_auto_search_text.setChecked(self.settings.ui.auto_search_text)
-        frm_general.addRow("Auto search text", self.chk_auto_search_text)
-
-        # New: live search and debounce seconds
-        self.chk_live_search = QCheckBox()
-        self.chk_live_search.setChecked(getattr(self.settings.ui, "live_search", True))
-        frm_general.addRow("Live search while typing", self.chk_live_search)
-
-        self.spn_search_debounce = QSpinBox()
-        self.spn_search_debounce.setRange(0, 10)
-        self.spn_search_debounce.setValue(
-            int(getattr(self.settings.ui, "search_debounce_seconds", 3))
-        )
-        frm_general.addRow("Search debounce (s)", self.spn_search_debounce)
-
-        self.chk_clear_after_fetch = QCheckBox()
-        self.chk_clear_after_fetch.setChecked(self.settings.ui.clear_input_after_fetch)
-        frm_general.addRow("Clear input after fetch", self.chk_clear_after_fetch)
-
-        self.btn_accent = QPushButton("Pick accent color")
-        self.btn_accent.clicked.connect(self._pick_accent)
-        frm_general.addRow("Accent color", self.btn_accent)
-
-        lay.addWidget(grp_general)
-
-        # yt-dlp group
-        grp_ytdlp = QGroupBox("yt-dlp")
-        frm_ytdlp = QFormLayout(grp_ytdlp)
-        frm_ytdlp.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.chk_ytdlp_auto = QCheckBox()
-        self.chk_ytdlp_auto.setChecked(self.settings.ytdlp.auto_update)
-        frm_ytdlp.addRow("Auto-update yt-dlp", self.chk_ytdlp_auto)
-
-        self.cmb_ytdlp_branch = QComboBox()
-        self.cmb_ytdlp_branch.addItems(["stable", "nightly", "master"])
-        self.cmb_ytdlp_branch.setCurrentText(self.settings.ytdlp.branch)
-        frm_ytdlp.addRow("yt-dlp branch", self.cmb_ytdlp_branch)
-
-        self.btn_ytdlp_check = QPushButton("Check yt-dlp now")
-        self.btn_ytdlp_check.clicked.connect(self._check_ytdlp_updates)
-        frm_ytdlp.addRow("", self.btn_ytdlp_check)
-
-        lay.addWidget(grp_ytdlp)
-
-        # App updates group
-        grp_app = QGroupBox("App updates")
-        frm_app = QFormLayout(grp_app)
-        frm_app.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.chk_app_auto = QCheckBox()
-        self.chk_app_auto.setChecked(self.settings.app.auto_update)
-        frm_app.addRow("Auto-update app", self.chk_app_auto)
-
-        self.cmb_app_channel = QComboBox()
-        self.cmb_app_channel.addItems(["release", "prerelease"])
-        self.cmb_app_channel.setCurrentText(self.settings.app.channel)
-        frm_app.addRow("Update channel", self.cmb_app_channel)
-
-        self.btn_app_check = QPushButton("Check app update")
-        self.btn_app_check.clicked.connect(
-            lambda: self._check_app_updates(check_only=True)
-        )
-        frm_app.addRow("", self.btn_app_check)
-
-        lay.addWidget(grp_app)
-        lay.addStretch(1)
-
-        # Auto-save handlers
-        self.chk_auto_advance.toggled.connect(self._settings_changed)
-        self.chk_auto_fetch_urls.toggled.connect(self._settings_changed)
-        self.chk_auto_search_text.toggled.connect(self._settings_changed)
-        self.chk_live_search.toggled.connect(self._settings_changed)
-        self.spn_search_debounce.valueChanged.connect(self._settings_changed)
-        self.chk_clear_after_fetch.toggled.connect(self._settings_changed)
-        self.chk_ytdlp_auto.toggled.connect(self._settings_changed)
-        self.cmb_ytdlp_branch.currentTextChanged.connect(self._settings_changed)
-        self.chk_app_auto.toggled.connect(self._settings_changed)
-        self.cmb_app_channel.currentTextChanged.connect(self._settings_changed)
-
-        return page
+        self.stack.addWidget(self.settings_page)  # NEW
 
     def _wire_signals(self):
         self.btn_home.clicked.connect(lambda: self.stack.setCurrentIndex(0))
         self.btn_settings.clicked.connect(lambda: self.stack.setCurrentIndex(1))
 
-        # Step 1 (merged)
+        # Step 1
         self.step1.urlDetected.connect(lambda _: self._refresh_stepper_titles())
         self.step1.requestAdvance.connect(self._advance_single_from_step1)
         self.step1.selectionConfirmed.connect(self._advance_multi_from_step1)
 
-        # Step 3
+        # Step 2
         self.step3.qualityConfirmed.connect(self._advance_from_step3)
         self.step3.backRequested.connect(
             lambda: (self.flow_stack.setCurrentIndex(0), self.stepper.set_current(0))
         )
 
-        # Step 4
+        # Step 3
         self.step4.allFinished.connect(self._on_downloads_finished)
         self.step4.backRequested.connect(
             lambda: (self.flow_stack.setCurrentIndex(1), self.stepper.set_current(1))
         )
 
+        # Settings page signals
+        self.settings_page.changed.connect(self._settings_changed)  # NEW
+        self.settings_page.accentPickRequested.connect(self._pick_accent)  # NEW
+        self.settings_page.checkYtDlpRequested.connect(self._check_ytdlp_updates)  # NEW
+        self.settings_page.checkAppCheckOnlyRequested.connect(
+            lambda: self._check_app_updates(check_only=True)
+        )
+
     def _refresh_stepper_titles(self):
-        # Always 3 steps now: Select -> Quality -> Download
         self.stepper.set_steps(["Select", "Quality", "Download"])
         self.stepper.set_current(0)
 
@@ -264,10 +169,40 @@ class MainWindow(QMainWindow):
         self._refresh_stepper_titles()
 
     def _advance_single_from_step1(self, payload: Dict):
-        # Immediate advance with single item
         info = payload.get("info") or {}
         if not info:
             return
+        # If already on downloads page, do not go back to Step 2
+        if self.flow_stack.currentIndex() == 2:
+            url = payload.get("url") or info.get("webpage_url") or info.get("url")
+            if not url:
+                return
+            # Fetch full metadata before adding
+            self.toast.show("Fetching video info...")
+            self._bg_fetcher = InfoFetcher(url)
+
+            def _ok(meta):
+                # Build default selection (use user's defaults; quality best)
+                kind = self.settings.defaults.kind or "audio"
+                fmt = self.settings.defaults.format if kind == "audio" else "mp4"
+                selection = {
+                    "items": [meta],
+                    "kind": kind,
+                    "format": fmt,
+                    "quality": "best",
+                }
+                self.step4.configure(selection, self.settings)
+                self.toast.show("Added to downloads.")
+
+            def _fail(err):
+                self.toast.show(f"Failed to fetch info: {err}")
+
+            self._bg_fetcher.finished_ok.connect(_ok)
+            self._bg_fetcher.finished_fail.connect(_fail)
+            self._bg_fetcher.start()
+            return
+
+        # Normal path: go to Step 2 for quality selection
         self.step3.set_items([info])
         self.flow_stack.setCurrentIndex(1)
         self.stepper.set_current(1)
@@ -287,16 +222,16 @@ class MainWindow(QMainWindow):
         self.step4.configure(selection, self.settings)
         self.flow_stack.setCurrentIndex(2)
         self.stepper.set_current(2)
-        # User presses Start in step 4
 
     def _on_downloads_finished(self):
+        # Always clear Step 1 contents after downloads
+        self.step1.reset()
         if self.settings.ui.reset_after_downloads:
             # Reset to step 1
             self.flow_stack.setCurrentIndex(0)
             self.stepper.set_current(0)
-            self.step1.reset()
         else:
-            # Switch button to Done already managed in step4 widget; stay on page
+            # Stay on downloads page; Step 1 is already cleared
             pass
 
     def _pick_accent(self):
@@ -310,21 +245,9 @@ class MainWindow(QMainWindow):
             self.toast.show(f"Accent changed to {c.name()}")
 
     def _settings_changed(self):
-        # Persist changes immediately
-        self.settings.ui.auto_advance = self.chk_auto_advance.isChecked()
-        self.settings.ui.auto_fetch_urls = self.chk_auto_fetch_urls.isChecked()
-        self.settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
-        self.settings.ui.live_search = self.chk_live_search.isChecked()
-        self.settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
-        self.settings.ui.clear_input_after_fetch = (
-            self.chk_clear_after_fetch.isChecked()
-        )
-        self.settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
-        self.settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
-        self.settings.app.auto_update = self.chk_app_auto.isChecked()
-        self.settings.app.channel = self.cmb_app_channel.currentText()
+        # Persist changes immediately using SettingsPage
+        self.settings_page.apply_to(self.settings)
         self.settings_mgr.save(self.settings)
-        # No toast spam here
 
     def _ensure_ffmpeg(self):
         ok = ensure_ffmpeg_in_path()
@@ -384,11 +307,9 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    # Better SIGINT handling on Windows consoles
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     app = QApplication(sys.argv)
-    # Guard high-DPI attributes (may not exist in Qt6)
     try:
         if hasattr(Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
             app.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
@@ -397,36 +318,6 @@ def main():
     except Exception:
         pass
     win = MainWindow()
-    win.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
-    app = QApplication(sys.argv)
-    # Guard high-DPI attributes (may not exist in Qt6)
-    try:
-        if hasattr(Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
-            app.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
-        if hasattr(Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
-            app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
-    except Exception:
-        pass
-    win = MainWindow()
-    win.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
-    win.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
-if __name__ == "__main__":
-    main()
     win.show()
     sys.exit(app.exec())
 

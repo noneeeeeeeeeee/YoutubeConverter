@@ -14,14 +14,15 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QCheckBox,
 )
-from PyQt6.QtGui import QIcon, QPixmap, QColor
-from urllib.parse import urlparse, parse_qs
+from PyQt6.QtGui import QIcon, QPixmap, QColor, QImage
+from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 
 from core.settings import AppSettings
 from core.yt_manager import InfoFetcher
 
 YOUTUBE_URL_RE = re.compile(r"https?://[^\s]+")
 VIDEO_HOSTS = ("www.youtube.com", "m.youtube.com", "youtube.com", "youtu.be")
+ICON_PIXMAP_ROLE = int(Qt.ItemDataRole.UserRole) + 1  # store original pixmap
 
 
 class Step1LinkWidget(QWidget):
@@ -42,6 +43,14 @@ class Step1LinkWidget(QWidget):
         self.search_timer.setSingleShot(True)
         self.search_timer.timeout.connect(self._do_debounced_search)
 
+        # Suppress auto-fetch shortly after handling fast paste
+        self._suppress_auto = False
+        self._suppress_timer = QTimer(self)
+        self._suppress_timer.setSingleShot(True)
+        self._suppress_timer.timeout.connect(
+            lambda: setattr(self, "_suppress_auto", False)
+        )
+
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
@@ -52,9 +61,13 @@ class Step1LinkWidget(QWidget):
         self.txt.setPlaceholderText(
             "Paste a YouTube URL or type to search, then press Enter…"
         )
+        # Intercept Ctrl+V to use the same fast-paste logic
+        self.txt.installEventFilter(self)
         self.chk_multi = QCheckBox("Add multiple")
         self.chk_multi.setObjectName("ButtonLike")  # styled as a button
         self.chk_multi.setChecked(False)
+        # prevent dotted focus on key navigation
+        self.chk_multi.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_paste = QPushButton("Paste")
         top.addWidget(self.txt, 1)
         top.addWidget(self.chk_multi)  # moved before Paste
@@ -98,6 +111,12 @@ class Step1LinkWidget(QWidget):
         # Playlist tab content
         pl_lay = QVBoxLayout(self.tab_playlist)
         pl_lay.setContentsMargins(0, 0, 0, 0)
+        # NEW: Select all checkbox row
+        self.chk_pl_select_all = QCheckBox("Select all")
+        self.chk_pl_select_all.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.chk_pl_select_all.toggled.connect(self._on_pl_select_all_toggled)
+        pl_lay.addWidget(self.chk_pl_select_all, 0, Qt.AlignmentFlag.AlignLeft)
+
         self.playlist_list = QListWidget()
         self.playlist_list.setIconSize(QSize(96, 54))
         pl_lay.addWidget(self.playlist_list, 1)
@@ -105,6 +124,7 @@ class Step1LinkWidget(QWidget):
         bottom = QHBoxLayout()
         bottom.addStretch(1)
         self.btn_next = QPushButton("Next")
+        self.btn_next.setVisible(False)  # show only when multi is enabled
         bottom.addWidget(self.btn_next)
         lay.addLayout(bottom)
 
@@ -112,18 +132,29 @@ class Step1LinkWidget(QWidget):
         self.btn_paste.clicked.connect(self._paste)
         self.txt.returnPressed.connect(self._enter_pressed)
         self.txt.textChanged.connect(self._on_text_changed)
+        self.chk_multi.toggled.connect(self._on_multi_toggled)
         self.results.itemClicked.connect(self._toggle_from_results)
         self.selected_list.itemClicked.connect(self._remove_from_selected_prompt)
         self.playlist_list.itemClicked.connect(self._toggle_from_playlist)
         self.btn_next.clicked.connect(self._confirm_selection)
 
-    # --- typing and debounce handling ---
-    def _on_text_changed(self, _text: str):
-        q = self.txt.text().strip()
-        if not q:
-            self.search_timer.stop()
-            return
-        # Cancel any in-flight fetch when user continues typing
+    # Event filter to detect Ctrl+V and use our paste handler
+    def eventFilter(self, obj, event):
+        if obj is self.txt:
+            try:
+                from PyQt6.QtCore import QEvent
+                from PyQt6.QtGui import QKeySequence
+            except Exception:
+                return super().eventFilter(obj, event)
+            if event.type() == QEvent.Type.KeyPress:
+                # Ctrl+V or Shift+Insert
+                if event.matches(QKeySequence.StandardKey.Paste):
+                    self._handle_paste_from_clipboard()
+                    return True
+        return super().eventFilter(obj, event)
+
+    # Utils
+    def _cancel_fetch(self):
         if self.fetcher and self.fetcher.isRunning():
             try:
                 self.fetcher.terminate()
@@ -132,15 +163,70 @@ class Step1LinkWidget(QWidget):
                 pass
             finally:
                 self.fetcher = None
-        # URLs: honor auto-fetch URLs immediately
-        if YOUTUBE_URL_RE.match(q):
-            if self.settings.ui.auto_fetch_urls:
-                self._start_fetch(q)
+
+    def _paste(self):
+        # Use the same handler for the Paste button
+        self._handle_paste_from_clipboard()
+
+    def _handle_paste_from_clipboard(self):
+        from PyQt6.QtWidgets import QApplication
+
+        txt = QApplication.clipboard().text().strip()
+        if not txt:
             return
-        # Text search: only when auto_search_text is enabled
+        # Reflect in UI
+        self.txt.setText(txt)
+        # Cancel any in-flight fetch and start fresh
+        self._cancel_fetch()
+        # Classify and handle fast-paste policy
+        if not YOUTUBE_URL_RE.match(txt):
+            self._maybe_auto_fetch()
+            return
+        kind, norm = self._classify_url(txt)
+        if kind == "radio":
+            self.lbl_status.setText("Radio playlists are not supported.")
+            return
+        if kind == "playlist":
+            if not self.chk_multi.isChecked():
+                self.chk_multi.setChecked(True)
+            self._start_fetch(norm)
+            return
+        # single
+        if getattr(self.settings.ui, "fast_paste_enabled", True):
+            if self._try_fast_single_url(norm):
+                return
+        self._start_fetch(norm)
+
+    # --- typing and debounce handling ---
+    def _on_text_changed(self, _text: str):
+        q = self.txt.text().strip()
+        if not q:
+            self.search_timer.stop()
+            return
+        # Cancel in-flight fetch when typing resumes
+        self._cancel_fetch()
+        # URLs: auto flow
+        if YOUTUBE_URL_RE.match(q):
+            if not self.settings.ui.auto_fetch_urls:
+                return
+            kind, norm = self._classify_url(q)
+            if kind == "radio":
+                self.lbl_status.setText("Radio playlists are not supported.")
+                return
+            if kind == "playlist":
+                if not self.chk_multi.isChecked():
+                    self.chk_multi.setChecked(True)
+                self._start_fetch(norm)
+                return
+            # single: attempt fast link paste even from typing
+            if getattr(self.settings.ui, "fast_paste_enabled", True):
+                if self._try_fast_single_url(norm):
+                    return
+            self._start_fetch(norm)
+            return
+        # Text search
         if not self.settings.ui.auto_search_text:
             return
-        # If live_search enabled, schedule a debounce; otherwise wait for Enter
         if getattr(self.settings.ui, "live_search", False):
             secs = max(0, int(getattr(self.settings.ui, "search_debounce_seconds", 3)))
             self.search_timer.start(secs * 1000)
@@ -153,24 +239,24 @@ class Step1LinkWidget(QWidget):
             return
         self._start_fetch(f"ytsearch20:{q}")
 
-    def _paste(self):
-        from PyQt6.QtWidgets import QApplication
-
-        txt = QApplication.clipboard().text().strip()
-        if not txt:
-            return
-        self.txt.setText(txt)
-        self._maybe_auto_fetch()
-
     def _enter_pressed(self):
         q = self.txt.text().strip()
         if not q:
             return
         if YOUTUBE_URL_RE.match(q):
-            # Try fast-path first
-            if self._try_fast_single_url(q):
+            kind, norm = self._classify_url(q)
+            if kind == "radio":
+                self.lbl_status.setText("Radio playlists are not supported.")
                 return
-            self._start_fetch(q)
+            if kind == "playlist":
+                if not self.chk_multi.isChecked():
+                    self.chk_multi.setChecked(True)
+                self._start_fetch(norm)
+                return
+            # single
+            if self._try_fast_single_url(norm):
+                return
+            self._start_fetch(norm)
         else:
             self._start_fetch(f"ytsearch20:{q}")
 
@@ -179,13 +265,88 @@ class Step1LinkWidget(QWidget):
         if not q:
             return
         if YOUTUBE_URL_RE.match(q):
-            if self.settings.ui.auto_fetch_urls:
-                if self._try_fast_single_url(q):
-                    return
-                self._start_fetch(q)
+            if not self.settings.ui.auto_fetch_urls:
+                return
+            kind, norm = self._classify_url(q)
+            if kind == "radio":
+                self.lbl_status.setText("Radio playlists are not supported.")
+                return
+            if kind == "playlist":
+                if not self.chk_multi.isChecked():
+                    self.chk_multi.setChecked(True)
+                self._start_fetch(norm)
+                return
+            # single
+            if self._try_fast_single_url(norm):
+                return
+            self._start_fetch(norm)
         else:
             if self.settings.ui.auto_search_text:
                 self._start_fetch(f"ytsearch20:{q}")
+
+    def _classify_url(self, url: str) -> (str, str):
+        """
+        Returns (kind, normalized_url)
+        kind: 'single' | 'playlist' | 'radio' | 'unknown'
+        """
+        try:
+            u = urlparse(url)
+            if u.netloc not in VIDEO_HOSTS:
+                return "unknown", url
+            # youtu.be short form
+            if u.netloc == "youtu.be":
+                vid = u.path.strip("/")
+                q = parse_qs(u.query or "")
+                lst = (q.get("list") or [""])[0]
+                if lst.startswith("RD") or q.get("start_radio", ["0"])[0] == "1":
+                    return "radio", url
+                if lst:
+                    # normalize to watch with v+list
+                    qs = urlencode({"v": vid, "list": lst}, doseq=True)
+                    return "playlist", urlunparse(
+                        ("https", "www.youtube.com", "/watch", "", qs, "")
+                    )
+                # single
+                qs = urlencode({"v": vid}, doseq=True)
+                return "single", urlunparse(
+                    ("https", "www.youtube.com", "/watch", "", qs, "")
+                )
+            # shorts
+            if u.path.startswith("/shorts/"):
+                vid = u.path.split("/")[-1]
+                qs = urlencode({"v": vid}, doseq=True)
+                return "single", urlunparse(
+                    (u.scheme or "https", "www.youtube.com", "/watch", "", qs, "")
+                )
+            # standard watch
+            if u.path == "/watch":
+                q = parse_qs(u.query or "")
+                lst = (q.get("list") or [""])[0]
+                if lst:
+                    if lst.startswith("RD") or (q.get("start_radio", ["0"])[0] == "1"):
+                        return "radio", url
+                    # keep only v+list for playlist fetch
+                    keep = {}
+                    if "v" in q:
+                        keep["v"] = q["v"]
+                    keep["list"] = [lst]
+                    qs = urlencode(keep, doseq=True)
+                    return "playlist", urlunparse(
+                        (u.scheme, u.netloc, u.path, u.params, qs, u.fragment)
+                    )
+                # single: keep v(+t)
+                keep = {}
+                if "v" in q:
+                    keep["v"] = q["v"]
+                if "t" in q:
+                    keep["t"] = q["t"]
+                qs = urlencode(keep, doseq=True)
+                return "single", urlunparse(
+                    (u.scheme, u.netloc, u.path, u.params, qs, u.fragment)
+                )
+        except Exception:
+            return "unknown", url
+        return "unknown", url
 
     def _is_simple_video_url(self, url: str) -> bool:
         try:
@@ -193,13 +354,10 @@ class Step1LinkWidget(QWidget):
             if u.netloc not in VIDEO_HOSTS:
                 return False
             if u.netloc == "youtu.be":
-                # youtu.be/<id>
                 return bool(u.path.strip("/"))
-            # youtube.com/watch?v=<id> without playlist list=
             if u.path == "/watch":
                 q = parse_qs(u.query or "")
-                return "v" in q and "list" not in q
-            # shorts/<id>
+                return "v" in q and len(q.get("v", [])) > 0 and ("list" not in q)
             if u.path.startswith("/shorts/"):
                 return True
         except Exception:
@@ -207,17 +365,16 @@ class Step1LinkWidget(QWidget):
         return False
 
     def _try_fast_single_url(self, url: str) -> bool:
-        # If clearly a single-video URL (not a playlist), skip yt-dlp info fetch
         if not self._is_simple_video_url(url):
             return False
         title = self.txt.text().strip() or url
         info = {"webpage_url": url, "url": url, "title": title}
-        if (not self.chk_multi.isChecked()) and self.settings.ui.auto_advance:
+        if not self.chk_multi.isChecked():
+            # Always auto-advance when not in multi mode
             self.urlDetected.emit(info)
             self.requestAdvance.emit({"url": url, "info": info, "is_playlist": False})
         else:
-            self._add_selected(info)
-        # Optional: clear input if configured
+            self._upsert_selected(info)
         if self.settings.ui.clear_input_after_fetch:
             self.txt.clear()
         self.lbl_status.setText("")
@@ -274,6 +431,10 @@ class Step1LinkWidget(QWidget):
                 f"Loaded playlist with {len(info.get('entries') or [])} videos."
             )
             self.playlist_list.clear()
+            # ensure "Select all" is unchecked initially
+            self.chk_pl_select_all.blockSignals(True)
+            self.chk_pl_select_all.setChecked(False)
+            self.chk_pl_select_all.blockSignals(False)
             for e in info.get("entries") or []:
                 if not e:
                     continue
@@ -285,6 +446,7 @@ class Step1LinkWidget(QWidget):
                 )
                 if pix:
                     it.setIcon(QIcon(pix))
+                    it.setData(ICON_PIXMAP_ROLE, pix)  # keep original pixmap
                 self._style_playlist_item(it, self._is_selected(e))
                 self.playlist_list.addItem(it)
             self.tabs.setTabVisible(self.idx_playlist, True)
@@ -292,23 +454,127 @@ class Step1LinkWidget(QWidget):
             return
 
         # Single URL info
-        if (not self.chk_multi.isChecked()) and self.settings.ui.auto_advance:
+        if not self.chk_multi.isChecked():
             self.urlDetected.emit(info)
             self.requestAdvance.emit(
                 {"url": self.txt.text().strip(), "info": info, "is_playlist": False}
             )
         else:
-            self._add_selected(info)
+            self._upsert_selected(info)
 
-    def _info_fail(self, err: str):
-        # Show error and allow another attempt
-        self.lbl_status.setText(f"Error: {err}")
+    # NEW: upsert to avoid duplicates and upgrade metadata in-place
+    def _upsert_selected(self, info: Dict):
+        url = (info or {}).get("webpage_url") or (info or {}).get("url")
+        if not url:
+            return
+        idx = next(
+            (
+                i
+                for i, it in enumerate(self.selected)
+                if (it.get("webpage_url") or it.get("url")) == url
+            ),
+            -1,
+        )
+        if idx >= 0:
+            self.selected[idx] = {**self.selected[idx], **info}
+        else:
+            self.selected.append(info)
+        self._refresh_selected_list()
+        has_selected = self.selected_list.count() > 0
+        self.tabs.setTabVisible(self.idx_selected, has_selected)
+        if has_selected:
+            self.tabs.setCurrentIndex(self.idx_selected)
+
+    def _add_selected(self, info: Dict):
+        # Normalize using upsert (avoid duplicates)
+        if info.get("_type") == "playlist" and info.get("entries"):
+            for e in info["entries"]:
+                if e:
+                    self._upsert_selected(e)
+        else:
+            self._upsert_selected(info)
+        # Selected tab visibility handled in _upsert_selected
+
+    # NEW: select/deselect all in the current playlist view (batched, fast)
+    def _on_pl_select_all_toggled(self, checked: bool):
+        self.playlist_list.setUpdatesEnabled(False)
+        self.selected_list.setUpdatesEnabled(False)
+        try:
+            # Batch apply without refreshing per item
+            for i in range(self.playlist_list.count()):
+                it = self.playlist_list.item(i)
+                e = it.data(Qt.ItemDataRole.UserRole) or {}
+                u = e.get("webpage_url") or e.get("url")
+                if not u:
+                    continue
+                if checked:
+                    self._upsert_selected_norefresh(e)
+                    self._style_playlist_item(it, True)
+                else:
+                    self._remove_selected_by_url_norefresh(u)
+                    self._style_playlist_item(it, False)
+            # Single refresh after batch
+            self._refresh_selected_list()
+            self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
+        finally:
+            self.selected_list.setUpdatesEnabled(True)
+            self.playlist_list.setUpdatesEnabled(True)
+
+    # Utils: grayscale and icon styling
+    def _to_gray(self, pix: QPixmap) -> QPixmap:
+        try:
+            img = pix.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            return QPixmap.fromImage(img)
+        except Exception:
+            return pix
+
+    def _apply_icon_style(self, item: QListWidgetItem, selected: bool):
+        pix = item.data(ICON_PIXMAP_ROLE)
+        if isinstance(pix, QPixmap):
+            if selected:
+                item.setIcon(QIcon(pix))
+            else:
+                item.setIcon(QIcon(self._to_gray(pix)))
 
     def _style_playlist_item(self, item: QListWidgetItem, selected: bool):
+        # color and icon style
         if selected:
             item.setForeground(QColor(self.settings.ui.accent_color_hex))
         else:
             item.setForeground(QColor("#8a8b90"))
+        self._apply_icon_style(item, selected)
+
+    # Internal helpers for batch ops (no refresh)
+    def _selected_index_by_url(self, url: str) -> int:
+        return next(
+            (
+                i
+                for i, it in enumerate(self.selected)
+                if (it.get("webpage_url") or it.get("url")) == url
+            ),
+            -1,
+        )
+
+    def _upsert_selected_norefresh(self, info: Dict):
+        url = (info or {}).get("webpage_url") or (info or {}).get("url")
+        if not url:
+            return
+        idx = self._selected_index_by_url(url)
+        if idx >= 0:
+            self.selected[idx] = {**self.selected[idx], **info}
+        else:
+            self.selected.append(info)
+
+    def _remove_selected_by_url_norefresh(self, url: str):
+        if not url:
+            return
+        self.selected = [
+            x for x in self.selected if (x.get("webpage_url") or x.get("url")) != url
+        ]
+
+    def _info_fail(self, err: str):
+        # Show error and allow another attempt
+        self.lbl_status.setText(f"Error: {err}")
 
     def _toggle_from_results(self, item: QListWidgetItem):
         data = item.data(Qt.ItemDataRole.UserRole) or {}
@@ -335,7 +601,7 @@ class Step1LinkWidget(QWidget):
                 self.selected.pop(idx)
                 self._refresh_selected_list()
             return
-        # New: do not block on yt-dlp fetch; add/advance immediately
+        # Do not block on yt-dlp fetch; add/advance immediately
         info = {
             "webpage_url": url,
             "url": url,
@@ -343,52 +609,7 @@ class Step1LinkWidget(QWidget):
             "thumbnail": data.get("thumbnail"),
             "thumbnails": data.get("thumbnails"),
         }
-        if (not self.chk_multi.isChecked()) and self.settings.ui.auto_advance:
-            self.urlDetected.emit(info)
-            self.requestAdvance.emit({"url": url, "info": info, "is_playlist": False})
-        else:
-            self._add_selected(info)
-
-    def _style_playlist_item(self, item: QListWidgetItem, selected: bool):
-        if selected:
-            item.setForeground(QColor(self.settings.ui.accent_color_hex))
-        else:
-            item.setForeground(QColor("#8a8b90"))
-
-    def _toggle_from_results(self, item: QListWidgetItem):
-        data = item.data(Qt.ItemDataRole.UserRole) or {}
-        url = data.get("webpage_url") or data.get("url")
-        title = data.get("title") or "Unknown title"
-        if not url:
-            return
-        # if in selected -> prompt to remove
-        idx = next(
-            (
-                i
-                for i, it in enumerate(self.selected)
-                if (it.get("webpage_url") or it.get("url")) == url
-            ),
-            -1,
-        )
-        if idx >= 0:
-            if (
-                QMessageBox.question(
-                    self, "Remove video", f"Remove '{title}' from selected?"
-                )
-                == QMessageBox.StandardButton.Yes
-            ):
-                self.selected.pop(idx)
-                self._refresh_selected_list()
-            return
-        # New: do not block on yt-dlp fetch; add/advance immediately
-        info = {
-            "webpage_url": url,
-            "url": url,
-            "title": title,
-            "thumbnail": data.get("thumbnail"),
-            "thumbnails": data.get("thumbnails"),
-        }
-        if (not self.chk_multi.isChecked()) and self.settings.ui.auto_advance:
+        if not self.chk_multi.isChecked():  # auto-advance always when not multi
             self.urlDetected.emit(info)
             self.requestAdvance.emit({"url": url, "info": info, "is_playlist": False})
         else:
@@ -509,9 +730,103 @@ class Step1LinkWidget(QWidget):
         return None
 
     def reset(self):
+        # Cancel any in-flight fetch
+        self._cancel_fetch()
+        # Clear inputs and status
         self.txt.clear()
         self.lbl_status.setText("")
+        # Clear all lists
         self.results.clear()
+        self.playlist_list.clear()
         self.selected.clear()
         self.selected_list.clear()
+        # Hide tabs except search, uncheck "Select all" and "Add multiple"
         self.tabs.setCurrentWidget(self.tab_search)
+        self.tabs.setTabVisible(self.idx_selected, False)
+        self.tabs.setTabVisible(self.idx_playlist, False)
+        self.chk_pl_select_all.blockSignals(True)
+        self.chk_pl_select_all.setChecked(False)
+        self.chk_pl_select_all.blockSignals(False)
+        self.chk_multi.blockSignals(True)
+        self.chk_multi.setChecked(False)
+        self.chk_multi.blockSignals(False)
+        self.btn_next.setVisible(False)
+        # Reset timers/flags
+        self._suppress_auto = False
+        self.search_timer.stop()
+
+    def _on_multi_toggled(self, checked: bool):
+        # Show Next only when multi is enabled
+        self.btn_next.setVisible(checked)
+        if checked:
+            return
+        if self.selected:
+            res = QMessageBox.question(
+                self,
+                "Clear selected",
+                "Are you sure you want to clear videos?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if res == QMessageBox.StandardButton.Yes:
+                self.selected.clear()
+                self._refresh_selected_list()
+                self.tabs.setTabVisible(self.idx_selected, False)
+                # Reset playlist item styling (no items selected anymore)
+                for i in range(self.playlist_list.count()):
+                    it = self.playlist_list.item(i)
+                    self._style_playlist_item(it, False)
+                self.lbl_status.setText("")
+            else:
+                # Revert toggle back to ON
+                self.chk_multi.blockSignals(True)
+                self.chk_multi.setChecked(True)
+                self.chk_multi.blockSignals(False)
+        self.btn_next.setVisible(checked)
+        if checked:
+            return
+        if self.selected:
+            res = QMessageBox.question(
+                self,
+                "Clear selected",
+                "Are you sure you want to clear videos?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if res == QMessageBox.StandardButton.Yes:
+                self.selected.clear()
+                self._refresh_selected_list()
+                self.tabs.setTabVisible(self.idx_selected, False)
+                for i in range(self.playlist_list.count()):
+                    it = self.playlist_list.item(i)
+                    self._style_playlist_item(it, False)
+                self.lbl_status.setText("")
+            else:
+                self.chk_multi.blockSignals(True)
+                self.chk_multi.setChecked(True)
+                self.chk_multi.blockSignals(False)
+
+        # NOTE: removed duplicate definitions of _paste, _style_playlist_item (non-grayscale),
+        # and the older minimal reset() to avoid redefinitions.
+        if checked:
+            return
+        if self.selected:
+            res = QMessageBox.question(
+                self,
+                "Clear selected",
+                "Are you sure you want to clear videos?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if res == QMessageBox.StandardButton.Yes:
+                # Clear selected list and update UI
+                self.selected.clear()
+                self._refresh_selected_list()
+                self.tabs.setTabVisible(self.idx_selected, False)
+                # Reset playlist item styling (no items selected anymore)
+                for i in range(self.playlist_list.count()):
+                    it = self.playlist_list.item(i)
+                    self._style_playlist_item(it, False)
+                self.lbl_status.setText("")
+            else:
+                # Revert toggle back to ON
+                self.chk_multi.blockSignals(True)
+                self.chk_multi.setChecked(True)
+                self.chk_multi.blockSignals(False)

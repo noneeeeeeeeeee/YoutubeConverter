@@ -1,2 +1,4 @@
 *.json
 settings.json
+yt-dlp-bin/*
+*.pyc

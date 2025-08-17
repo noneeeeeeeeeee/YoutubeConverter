@@ -1,5 +1,5 @@
 from typing import List, Dict
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QIcon, QPixmap
 
 from core.settings import AppSettings, SettingsManager
+from core.yt_manager import InfoFetcher
 
 
 class Step3QualityWidget(QWidget):
@@ -26,6 +27,8 @@ class Step3QualityWidget(QWidget):
         super().__init__()
         self.settings = settings
         self.items: List[Dict] = []
+        self._meta_fetchers: List[InfoFetcher] = []  # running re-fetchers
+        self._url_index: Dict[str, int] = {}  # map url->index for quick updates
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -87,12 +90,24 @@ class Step3QualityWidget(QWidget):
 
         self._kind_changed(self.rad_audio.isChecked())
 
+        # Timer was used to delay refetch; keep constructed but we will fetch immediately
+        self._refetch_timer = QTimer(self)
+        self._refetch_timer.setSingleShot(True)
+        self._refetch_timer.timeout.connect(self._start_refetch_missing)
+
     def set_items(self, items: List[Dict]):
         self.items = items
+        # Build url index
+        self._url_index = {}
+        for i, it in enumerate(items):
+            u = it.get("webpage_url") or it.get("url")
+            if u:
+                self._url_index[u] = i
+
         self.lbl.setText(
             f"Selected {len(items)} item(s). Choose output format and quality."
         )
-        # Populate preview with thumbnails
+        # Populate preview with thumbnails and titles
         self.preview.clear()
         for it in items:
             title = it.get("title") or "Untitled"
@@ -101,14 +116,20 @@ class Step3QualityWidget(QWidget):
             if pix:
                 lw.setIcon(QIcon(pix))
             self.preview.addItem(lw)
-        # Adjust preview height: exactly one row for single video, compact for lists
+        # Adjust preview height
         if len(items) <= 1:
             self.preview.setFixedHeight(self.preview.iconSize().height() + 16)
         else:
             self.preview.setMinimumHeight(96)
             self.preview.setMaximumHeight(150)
+
         # Refresh quality options according to current kind
         self._populate_quality_options()
+
+        # NEW: start background metadata fetch immediately
+        self._start_refetch_missing()
+        # Optional: no delayed refetch here anymore
+        self._refetch_timer.stop()
 
     def _load_thumb(self, it: Dict):
         url = it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get("url")
@@ -138,18 +159,36 @@ class Step3QualityWidget(QWidget):
         # Repopulate quality options for the selected kind
         self._populate_quality_options()
 
+    def _has_formats(self, it: Dict) -> bool:
+        fmts = it.get("formats")
+        return bool(fmts and isinstance(fmts, list) and len(fmts) > 0)
+
     def _populate_quality_options(self):
         self.cmb_quality.clear()
-        # Default sets
         default_v = ["best", "2160p", "1440p", "1080p", "720p", "480p", "360p"]
         default_a = ["best", "320k", "256k", "192k", "160k", "128k"]
-        first = self.items[0] if self.items else {}
-        fmts = first.get("formats") or []
+
+        if not self.items:
+            self.cmb_quality.addItems(
+                default_a if self.rad_audio.isChecked() else default_v
+            )
+            return
+
+        # Single-item special handling
+        if len(self.items) == 1 and not self._has_formats(self.items[0]):
+            # Unknown metadata -> allow only best/worse for now
+            self.cmb_quality.addItems(["best", "worse"])
+            return
+
+        # Build union across known items for playlists or fully-known single
+        fmts_lists = [
+            it.get("formats") or [] for it in self.items if self._has_formats(it)
+        ]
         if self.rad_audio.isChecked():
-            # Collect available audio bitrates
             abrs = sorted(
                 {
                     int(f.get("abr"))
+                    for fmts in fmts_lists
                     for f in fmts
                     if f.get("abr") and f.get("acodec") != "none"
                 },
@@ -161,6 +200,7 @@ class Step3QualityWidget(QWidget):
             heights = sorted(
                 {
                     int(f.get("height"))
+                    for fmts in fmts_lists
                     for f in fmts
                     if f.get("height") and f.get("vcodec") != "none"
                 },
@@ -169,7 +209,54 @@ class Step3QualityWidget(QWidget):
             opts = ["best"] + [f"{h}p" for h in heights] if heights else default_v
             self.cmb_quality.addItems(opts)
 
+    def _start_refetch_missing(self):
+        # Start re-fetch for items without formats; cancel any previous attempts
+        self._cleanup_fetchers()
+        for it in self.items:
+            if self._has_formats(it):
+                continue
+            url = it.get("webpage_url") or it.get("url")
+            if not url:
+                continue
+            f = InfoFetcher(url)
+
+            # capture url for closure
+            def _ok(meta, url=url):
+                idx = self._url_index.get(url, -1)
+                if idx >= 0 and isinstance(meta, dict):
+                    # Merge and update
+                    self.items[idx] = {**self.items[idx], **meta}
+                    # Update preview title
+                    title = self.items[idx].get("title") or "Untitled"
+                    lw = self.preview.item(idx)
+                    if lw:
+                        lw.setText(title)
+                    # Refresh quality options to show full list when available
+                    self._populate_quality_options()
+
+            def _fail(err):
+                # Ignore; user can proceed with best/worse or defaults
+                pass
+
+            f.finished_ok.connect(_ok)
+            f.finished_fail.connect(_fail)
+            self._meta_fetchers.append(f)
+            f.start()
+
+    def _cleanup_fetchers(self):
+        for f in self._meta_fetchers:
+            try:
+                if f.isRunning():
+                    f.terminate()
+                    f.wait(300)
+            except Exception:
+                pass
+        self._meta_fetchers.clear()
+
     def _confirm(self):
+        # Cancel any refetch still in flight when proceeding
+        self._refetch_timer.stop()
+        self._cleanup_fetchers()
         kind = "audio" if self.rad_audio.isChecked() else "video"
         fmt = self.cmb_format.currentText().strip()
         quality = self.cmb_quality.currentText().strip() or "best"

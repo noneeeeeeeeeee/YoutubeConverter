@@ -55,6 +55,15 @@ def ensure_ytdlp_dir():
     os.makedirs(YTDLP_DIR, exist_ok=True)
 
 
+def clear_ytdlp_cache():
+    """Best-effort cache cleanup to avoid stale/corrupt cache."""
+    try:
+        if os.path.exists(YTDLP_EXE):
+            subprocess.run([YTDLP_EXE, "--rm-cache-dir"], timeout=15)
+    except Exception:
+        pass
+
+
 def build_ydl_opts(
     base_dir: str,
     kind: str,
@@ -133,6 +142,8 @@ def build_ydl_opts(
         "socket_timeout": 15,  # add: avoid long hangs
         "extractor_retries": 2,  # add: limit extractor retries
         "skip_unavailable_fragments": True,
+        # Disable disk cache to avoid slowdowns and stale data
+        "cachedir": False,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.5",
@@ -149,29 +160,54 @@ class InfoFetcher(QThread):
     finished_ok = pyqtSignal(dict)
     finished_fail = pyqtSignal(str)
 
-    def __init__(self, url: str, timeout_sec: int = 30):
+    def __init__(self, url: str, timeout_sec: int = 60):  # increase default timeout
         super().__init__()
         self.url = url
         self.timeout_sec = timeout_sec
 
+    def _is_search(self) -> bool:
+        return isinstance(self.url, str) and self.url.startswith("ytsearch")
+
+    def _is_playlist(self) -> bool:
+        try:
+            u = str(self.url)
+            return ("list=" in u) or ("playlist?" in u)
+        except Exception:
+            return False
+
     def _extract_with_binary(self) -> dict:
-        is_search = isinstance(self.url, str) and self.url.startswith("ytsearch")
+        is_search = self._is_search()
+        is_playlist = self._is_playlist()
         args = [
             YTDLP_EXE,
             "-J",
             "--ignore-config",
             "--no-warnings",
             "--no-progress",
-            "--no-sponsorblock",
+            "--skip-download",
+            "--no-write-comments",
+            "--no-write-playlist-metafiles",
+            "--no-cache-dir",  # NEW: disable cache
+            "--extractor-retries",
+            "1",
+            # extractor args (can repeat)
             "--extractor-args",
             "youtube:player_client=tv",
+            "--extractor-args",
+            "youtube:skip=dash,hls",
+            "--extractor-args",
+            "youtubetab:skip=webpage",
         ]
-        if is_search:
-            # Flat metadata for speed
+        # Flat metadata is faster for searches and playlists
+        if is_search or is_playlist:
             args.append("--flat-playlist")
         args.append(self.url)
+
+        env = os.environ.copy()
+        env["YTDLP_NO_PLUGINS"] = "1"
+
         proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=self.timeout_sec
+            args, capture_output=True, text=True, timeout=self.timeout_sec, env=env
         )
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "yt-dlp binary failed")
@@ -180,20 +216,26 @@ class InfoFetcher(QThread):
         return json.loads(proc.stdout)
 
     def _extract_with_python_api(self) -> dict:
-        is_search = isinstance(self.url, str) and self.url.startswith("ytsearch")
+        is_search = self._is_search()
+        is_playlist = self._is_playlist()
         ydl_opts = {
             "quiet": True,
             "skip_download": True,
             "noprogress": True,
             "noplaylist": False,
-            "extract_flat": True if is_search else False,
+            "extract_flat": True if (is_search or is_playlist) else False,
             "socket_timeout": 15,
-            "extractor_retries": 2,
+            "extractor_retries": 1 if (is_search or is_playlist) else 2,
+            # Disable disk cache
+            "cachedir": False,
             "http_headers": {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.5",
             },
-            "extractor_args": {"youtube": {"player_client": ["tv"]}},
+            "extractor_args": {
+                "youtube": {"player_client": ["tv"], "skip": ["dash", "hls"]},
+                "youtubetab": {"skip": ["webpage"]},
+            },
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(self.url, download=False)
@@ -208,7 +250,7 @@ class InfoFetcher(QThread):
             self.finished_ok.emit(info)
         except subprocess.TimeoutExpired:
             self.finished_fail.emit("Timed out while fetching info")
-        except Exception as e:
+        except Exception:
             # Fallback once via Python API if binary failed
             try:
                 info = self._extract_with_python_api()
@@ -245,6 +287,7 @@ class Downloader(QThread):
         self._pause_evt = Event()
         self._pause_evt.set()  # running
         self._stop = False
+        self._meta_threads: Dict[int, InfoFetcher] = {}  # idx -> fetcher
 
     # External controls
     def pause(self):
@@ -283,7 +326,7 @@ class Downloader(QThread):
         return hook
 
     def run(self):
-        # Fetch thumbnails first
+        # Thumbs prefetch
         for idx, it in enumerate(self.items):
             thumb_url = (
                 (it.get("thumbnail") or it.get("thumbnails", [{}])[-1].get("url"))
@@ -300,13 +343,41 @@ class Downloader(QThread):
                 except Exception:
                     pass
 
+        # Start metadata fetchers for items missing metadata
         for idx, it in enumerate(self.items):
             if self._stop:
                 break
+            if self._needs_metadata(it):
+                url = it.get("webpage_url") or it.get("url")
+                if url:
+                    self._start_meta_fetch(idx, url)
+
+        # Build processing order: ready items first, then awaiting ones
+        ready = [i for i, it in enumerate(self.items) if not self._needs_metadata(it)]
+        waiting = [i for i, it in enumerate(self.items) if self._needs_metadata(it)]
+        order: List[int] = ready + waiting
+
+        stalled_rounds = 0
+        while order and not self._stop:
+            idx = order.pop(0)
+            it = self.items[idx]
             url = it.get("webpage_url") or it.get("url")
             if not url:
                 self.itemStatus.emit(idx, "Invalid URL")
                 continue
+
+            if self._needs_metadata(it):
+                # Still waiting for metadata -> skip for now
+                order.append(idx)
+                stalled_rounds += 1
+                if stalled_rounds >= len(order) + 1:
+                    # Avoid tight loop; give metadata fetchers time
+                    QThread.msleep(100)
+                    stalled_rounds = 0
+                continue
+            stalled_rounds = 0
+
+            # Download now that metadata is ready
             self.itemStatus.emit(idx, "Starting...")
             opts = build_ydl_opts(
                 self.base_dir,
@@ -327,7 +398,78 @@ class Downloader(QThread):
                     self.itemStatus.emit(idx, "Stopped")
                     break
                 self.itemStatus.emit(idx, f"Error: {e}")
+
         self.finished_all.emit()
+
+    def _start_meta_fetch(self, idx: int, url: str):
+        # Avoid duplicate starts
+        if idx in self._meta_threads:
+            return
+        self.itemStatus.emit(idx, "Fetching metadata...")
+        f = InfoFetcher(url)
+
+        def _ok(meta: dict, i=idx):
+            try:
+                # Merge metadata
+                self.items[i] = {**self.items[i], **(meta or {})}
+                # Emit new thumbnail if available
+                thumb_url = self.items[i].get("thumbnail") or (
+                    self.items[i].get("thumbnails") or [{}]
+                )[-1].get("url")
+                if thumb_url:
+                    try:
+                        r = requests.get(thumb_url, timeout=10)
+                        if r.ok:
+                            self.itemThumb.emit(i, r.content)
+                    except Exception:
+                        pass
+                title = self.items[i].get("title") or "Untitled"
+                self.itemStatus.emit(i, f"Metadata ready: {title}")
+            finally:
+                self._meta_threads.pop(i, None)
+
+        def _fail(err: str, i=idx):
+            self.itemStatus.emit(i, f"Metadata fetch failed, will try best available")
+            self._meta_threads.pop(i, None)
+
+        f.finished_ok.connect(_ok)
+        f.finished_fail.connect(_fail)
+        self._meta_threads[idx] = f
+        f.start()
+
+    def _needs_metadata(self, it: dict) -> bool:
+        # Heuristic: fast-paste placeholders usually have only url/title and lack id/thumbnail
+        if not it:
+            return True
+        if not it.get("url") and not it.get("webpage_url"):
+            return False  # invalid item handled elsewhere
+        has_core = (
+            bool(it.get("id")) or bool(it.get("duration")) or bool(it.get("extractor"))
+        )
+        has_thumb = bool(it.get("thumbnail")) or bool(it.get("thumbnails"))
+        return not (has_core and has_thumb)
+
+    def _extract_info_quick(self, url: str) -> dict:
+        # Lightweight metadata extraction (no download), cache disabled
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "noprogress": True,
+            "noplaylist": False,
+            "socket_timeout": 15,
+            "extractor_retries": 1,
+            "cachedir": False,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.5",
+            },
+            "extractor_args": {
+                "youtube": {"player_client": ["tv"], "skip": ["dash", "hls"]},
+                "youtubetab": {"skip": ["webpage"]},
+            },
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
 
 
 class YtDlpUpdateWorker(QThread):
@@ -390,6 +532,8 @@ class YtDlpUpdateWorker(QThread):
             except Exception:
                 pass
             self.status.emit("yt-dlp updated.")
+            # NEW: purge old caches after update
+            clear_ytdlp_cache()
         except Exception as e:
             self.status.emit(f"yt-dlp update failed: {e}")
 
@@ -462,5 +606,7 @@ class AppUpdateWorker(QThread):
             self.updated.emit(False)
             self.updated.emit(True)
         except Exception as e:
+            self.status.emit(f"App update failed: {e}")
+            self.updated.emit(False)
             self.status.emit(f"App update failed: {e}")
             self.updated.emit(False)

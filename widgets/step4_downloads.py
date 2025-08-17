@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QProgressBar,
-    QWidgetItem,
 )
 
 from core.settings import AppSettings, SettingsManager
@@ -75,17 +74,21 @@ class Step4DownloadsWidget(QWidget):
         self.btn_choose = QPushButton("Choose folder")
         self.btn_start = QPushButton("Start")
         self.btn_start.setEnabled(False)
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setEnabled(False)
         self.btn_done = QPushButton("Done")
         self.btn_done.setVisible(False)
         self.btn_back.clicked.connect(self.backRequested.emit)
         self.btn_choose.clicked.connect(self._choose_dir)
-        self.btn_start.clicked.connect(self.start_downloads)
+        self.btn_start.clicked.connect(self._toggle_start_pause)
+        self.btn_stop.clicked.connect(self._stop_downloads)
         self.btn_done.clicked.connect(self._done_clicked)
         top.addWidget(self.btn_back)
         top.addWidget(QLabel("Save to:"))
         top.addWidget(self.lbl_dir, 1)
         top.addWidget(self.btn_choose)
         top.addWidget(self.btn_start)
+        top.addWidget(self.btn_stop)
         top.addWidget(self.btn_done)
         lay.addLayout(top)
 
@@ -110,6 +113,19 @@ class Step4DownloadsWidget(QWidget):
             self.list.setItemWidget(item, w)
         self.btn_start.setEnabled(True)
         self.btn_done.setVisible(False)
+        self.btn_stop.setEnabled(False)
+
+    def _toggle_start_pause(self):
+        if not self.downloader:
+            self.start_downloads()
+            return
+        # Toggle pause/resume
+        if self.downloader.is_paused():
+            self.downloader.resume()
+            self.btn_start.setText("Pause")
+        else:
+            self.downloader.pause()
+            self.btn_start.setText("Resume")
 
     def start_downloads(self):
         if not self.items:
@@ -128,8 +144,16 @@ class Step4DownloadsWidget(QWidget):
         self.downloader.itemProgress.connect(self._on_item_progress)
         self.downloader.itemThumb.connect(self._on_item_thumb)
         self.downloader.finished_all.connect(self._on_all_finished)
-        self.btn_start.setEnabled(False)
+        self.btn_start.setText("Pause")
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(True)
         self.downloader.start()
+
+    def _stop_downloads(self):
+        if self.downloader:
+            self.downloader.stop()
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(False)
 
     def _choose_dir(self):
         d = QFileDialog.getExistingDirectory(
@@ -169,6 +193,8 @@ class Step4DownloadsWidget(QWidget):
 
     def _on_all_finished(self):
         self.btn_done.setVisible(True)
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(False)
         if self.settings.ui.reset_after_downloads:
             self.btn_done.setText("Reset")
         else:

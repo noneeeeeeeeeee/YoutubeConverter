@@ -1,10 +1,8 @@
 import os
 import sys
 import signal
-from typing import List, Dict, Optional
-
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QIcon
+from typing import List, Dict
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -13,12 +11,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QStackedWidget,
     QPushButton,
-    QFileDialog,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QSizePolicy,
     QFrame,
+    QGroupBox,
+    QSpinBox,
 )
 
 from core.settings import SettingsManager, AppSettings
@@ -28,32 +23,27 @@ from ui.style import StyleManager
 from ui.stepper import Stepper
 from ui.toast import ToastManager
 from widgets.step1_link import Step1LinkWidget
-from widgets.step2_playlist import Step2PlaylistWidget
 from widgets.step3_quality import Step3QualityWidget
 from widgets.step4_downloads import Step4DownloadsWidget
 
-APP_VERSION = "0.1.0"
-APP_REPO = "noneeeeeeeeeee/YoutubeConverter"  # repository to check for updates
+APP_VERSION = "0.1-Beta"
+APP_REPO = "noneeeeeeeeeee/YoutubeConverter"
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("YouTube Converter")
+        self.setWindowTitle(f"YouTube Converter {APP_VERSION}")
         self.setMinimumSize(1024, 640)
         self.settings_mgr = SettingsManager()
         self.settings: AppSettings = self.settings_mgr.load()
 
-        # Style
         self.style_mgr = StyleManager(self.settings.ui.accent_color_hex)
         self.setStyleSheet(self.style_mgr.qss())
         self.toast = ToastManager(self)
 
-        # Left sidebar (Home, Settings)
         self.sidebar = self._build_sidebar()
-        # Top stepper
         self.stepper = Stepper()
-        # Central stack of step widgets
         self.stack = QStackedWidget()
         self._build_pages()
 
@@ -62,10 +52,8 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # Sidebar
         root_layout.addWidget(self.sidebar)
 
-        # Right area: top stepper + stack
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(12, 12, 12, 12)
@@ -91,7 +79,7 @@ class MainWindow(QMainWindow):
             self._check_app_updates(check_only=False)
 
         # Initialize steps display
-        self._refresh_stepper_titles(is_playlist=False)
+        self._refresh_stepper_titles()
 
     def _build_sidebar(self) -> QWidget:
         side = QFrame()
@@ -120,90 +108,124 @@ class MainWindow(QMainWindow):
         return side
 
     def _build_pages(self):
-        # Home flow widgets
         self.page_flow = QWidget()
         flow_layout = QVBoxLayout(self.page_flow)
         flow_layout.setContentsMargins(0, 0, 0, 0)
         flow_layout.setSpacing(0)
 
         self.step1 = Step1LinkWidget(self.settings)
-        self.step2 = Step2PlaylistWidget()
         self.step3 = Step3QualityWidget(self.settings)
         self.step4 = Step4DownloadsWidget(self.settings)
 
         self.flow_stack = QStackedWidget()
-        self.flow_stack.addWidget(self.step1)  # index 0
-        self.flow_stack.addWidget(self.step2)  # index 1 (playlist select)
-        self.flow_stack.addWidget(self.step3)  # index 2 (quality)
-        self.flow_stack.addWidget(self.step4)  # index 3 (downloads)
+        self.flow_stack.addWidget(self.step1)
+        self.flow_stack.addWidget(self.step3)
+        self.flow_stack.addWidget(self.step4)
 
         flow_layout.addWidget(self.flow_stack)
 
         # Settings page
         self.page_settings = self._build_settings_page()
 
-        self.stack.addWidget(self.page_flow)  # index 0
-        self.stack.addWidget(self.page_settings)  # index 1
+        self.stack.addWidget(self.page_flow)
+        self.stack.addWidget(self.page_settings)
 
     def _build_settings_page(self) -> QWidget:
-        from PyQt6.QtWidgets import (
-            QFormLayout,
-            QCheckBox,
-            QComboBox,
-            QColorDialog,
-            QLineEdit,
-        )
+        from PyQt6.QtWidgets import QFormLayout, QCheckBox, QComboBox, QColorDialog
 
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(16, 16, 16, 16)
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # Auto-advance
+        # General group
+        grp_general = QGroupBox("General")
+        frm_general = QFormLayout(grp_general)
+        frm_general.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self.chk_auto_advance = QCheckBox()
         self.chk_auto_advance.setChecked(self.settings.ui.auto_advance)
-        form.addRow("Auto-advance", self.chk_auto_advance)
+        frm_general.addRow("Auto-advance", self.chk_auto_advance)
 
-        # Accent color
+        self.chk_auto_fetch_urls = QCheckBox()
+        self.chk_auto_fetch_urls.setChecked(self.settings.ui.auto_fetch_urls)
+        frm_general.addRow("Auto fetch URLs", self.chk_auto_fetch_urls)
+
+        self.chk_auto_search_text = QCheckBox()
+        self.chk_auto_search_text.setChecked(self.settings.ui.auto_search_text)
+        frm_general.addRow("Auto search text", self.chk_auto_search_text)
+
+        # New: live search and debounce seconds
+        self.chk_live_search = QCheckBox()
+        self.chk_live_search.setChecked(getattr(self.settings.ui, "live_search", True))
+        frm_general.addRow("Live search while typing", self.chk_live_search)
+
+        self.spn_search_debounce = QSpinBox()
+        self.spn_search_debounce.setRange(0, 10)
+        self.spn_search_debounce.setValue(
+            int(getattr(self.settings.ui, "search_debounce_seconds", 3))
+        )
+        frm_general.addRow("Search debounce (s)", self.spn_search_debounce)
+
+        self.chk_clear_after_fetch = QCheckBox()
+        self.chk_clear_after_fetch.setChecked(self.settings.ui.clear_input_after_fetch)
+        frm_general.addRow("Clear input after fetch", self.chk_clear_after_fetch)
+
         self.btn_accent = QPushButton("Pick accent color")
         self.btn_accent.clicked.connect(self._pick_accent)
-        form.addRow("Accent color", self.btn_accent)
+        frm_general.addRow("Accent color", self.btn_accent)
 
-        # yt-dlp updates
+        lay.addWidget(grp_general)
+
+        # yt-dlp group
+        grp_ytdlp = QGroupBox("yt-dlp")
+        frm_ytdlp = QFormLayout(grp_ytdlp)
+        frm_ytdlp.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self.chk_ytdlp_auto = QCheckBox()
         self.chk_ytdlp_auto.setChecked(self.settings.ytdlp.auto_update)
-        form.addRow("Auto-update yt-dlp", self.chk_ytdlp_auto)
+        frm_ytdlp.addRow("Auto-update yt-dlp", self.chk_ytdlp_auto)
 
         self.cmb_ytdlp_branch = QComboBox()
         self.cmb_ytdlp_branch.addItems(["stable", "nightly", "master"])
         self.cmb_ytdlp_branch.setCurrentText(self.settings.ytdlp.branch)
-        form.addRow("yt-dlp branch", self.cmb_ytdlp_branch)
+        frm_ytdlp.addRow("yt-dlp branch", self.cmb_ytdlp_branch)
 
         self.btn_ytdlp_check = QPushButton("Check yt-dlp now")
         self.btn_ytdlp_check.clicked.connect(self._check_ytdlp_updates)
-        form.addRow("", self.btn_ytdlp_check)
+        frm_ytdlp.addRow("", self.btn_ytdlp_check)
 
-        # App updates
+        lay.addWidget(grp_ytdlp)
+
+        # App updates group
+        grp_app = QGroupBox("App updates")
+        frm_app = QFormLayout(grp_app)
+        frm_app.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self.chk_app_auto = QCheckBox()
         self.chk_app_auto.setChecked(self.settings.app.auto_update)
-        form.addRow("Auto-update app", self.chk_app_auto)
+        frm_app.addRow("Auto-update app", self.chk_app_auto)
 
         self.cmb_app_channel = QComboBox()
         self.cmb_app_channel.addItems(["release", "prerelease"])
         self.cmb_app_channel.setCurrentText(self.settings.app.channel)
-        form.addRow("App update channel", self.cmb_app_channel)
+        frm_app.addRow("Update channel", self.cmb_app_channel)
 
         self.btn_app_check = QPushButton("Check app update")
         self.btn_app_check.clicked.connect(
             lambda: self._check_app_updates(check_only=True)
         )
-        form.addRow("", self.btn_app_check)
+        frm_app.addRow("", self.btn_app_check)
 
-        lay.addLayout(form)
+        lay.addWidget(grp_app)
+        lay.addStretch(1)
 
-        # Auto-save handlers (remove explicit Save button)
+        # Auto-save handlers
         self.chk_auto_advance.toggled.connect(self._settings_changed)
+        self.chk_auto_fetch_urls.toggled.connect(self._settings_changed)
+        self.chk_auto_search_text.toggled.connect(self._settings_changed)
+        self.chk_live_search.toggled.connect(self._settings_changed)
+        self.spn_search_debounce.valueChanged.connect(self._settings_changed)
+        self.chk_clear_after_fetch.toggled.connect(self._settings_changed)
         self.chk_ytdlp_auto.toggled.connect(self._settings_changed)
         self.cmb_ytdlp_branch.currentTextChanged.connect(self._settings_changed)
         self.chk_app_auto.toggled.connect(self._settings_changed)
@@ -215,58 +237,47 @@ class MainWindow(QMainWindow):
         self.btn_home.clicked.connect(lambda: self.stack.setCurrentIndex(0))
         self.btn_settings.clicked.connect(lambda: self.stack.setCurrentIndex(1))
 
-        # Step 1
-        self.step1.urlDetected.connect(self._on_url_detected)
-        self.step1.requestAdvance.connect(self._advance_from_step1)
-
-        # Step 2
-        self.step2.selectionConfirmed.connect(self._advance_from_step2)
-        self.step2.backRequested.connect(self._back_from_step2)
+        # Step 1 (merged)
+        self.step1.urlDetected.connect(lambda _: self._refresh_stepper_titles())
+        self.step1.requestAdvance.connect(self._advance_single_from_step1)
+        self.step1.selectionConfirmed.connect(self._advance_multi_from_step1)
 
         # Step 3
         self.step3.qualityConfirmed.connect(self._advance_from_step3)
-        self.step3.backRequested.connect(self._back_from_step3)
+        self.step3.backRequested.connect(
+            lambda: (self.flow_stack.setCurrentIndex(0), self.stepper.set_current(0))
+        )
 
         # Step 4
         self.step4.allFinished.connect(self._on_downloads_finished)
-        self.step4.backRequested.connect(self._back_from_step4)
+        self.step4.backRequested.connect(
+            lambda: (self.flow_stack.setCurrentIndex(1), self.stepper.set_current(1))
+        )
 
-    def _refresh_stepper_titles(self, is_playlist: bool):
-        if is_playlist:
-            self.stepper.set_steps(["Link", "Select", "Quality", "Download"])
-        else:
-            self.stepper.set_steps(["Link", "Quality", "Download"])
+    def _refresh_stepper_titles(self):
+        # Always 3 steps now: Select -> Quality -> Download
+        self.stepper.set_steps(["Select", "Quality", "Download"])
         self.stepper.set_current(0)
 
     def _on_url_detected(self, info: Dict):
         is_playlist = info.get("_type") == "playlist" or info.get("entries") is not None
-        self._refresh_stepper_titles(is_playlist)
+        self._refresh_stepper_titles()
 
-    def _advance_from_step1(self, payload: Dict):
-        # payload: {"url": str, "info": dict, "is_playlist": bool}
-        is_playlist = payload.get("is_playlist", False)
-        info = payload.get("info", {})
-        self.step4.reset()  # clear old list
-        if is_playlist:
-            # Fill playlist selection
-            self.step2.set_entries(info.get("entries") or [])
-            self.flow_stack.setCurrentIndex(1)
-            self.stepper.set_current(1)
-        else:
-            # Single video -> go to quality
-            self.step3.set_items([info])
-            self.flow_stack.setCurrentIndex(2)
-            self.stepper.set_current(1)
-        self.stack.setCurrentIndex(0)
-
-    def _advance_from_step2(self, entries: List[Dict]):
-        # entries selected from playlist -> to quality
-        if not entries:
-            self.toast.show("No videos selected from playlist.")
+    def _advance_single_from_step1(self, payload: Dict):
+        # Immediate advance with single item
+        info = payload.get("info") or {}
+        if not info:
             return
-        self.step3.set_items(entries)
-        self.flow_stack.setCurrentIndex(2)
-        self.stepper.set_current(2)
+        self.step3.set_items([info])
+        self.flow_stack.setCurrentIndex(1)
+        self.stepper.set_current(1)
+
+    def _advance_multi_from_step1(self, items: List[Dict]):
+        if not items:
+            return
+        self.step3.set_items(items)
+        self.flow_stack.setCurrentIndex(1)
+        self.stepper.set_current(1)
 
     def _advance_from_step3(self, selection: Dict):
         # selection: {"items": [...], "kind": "audio"/"video", "format": "...", "quality": "..."
@@ -274,11 +285,9 @@ class MainWindow(QMainWindow):
         if not items:
             return
         self.step4.configure(selection, self.settings)
-        self.flow_stack.setCurrentIndex(3)
-        # Step index depends on playlist vs single
-        is_playlist = len(items) > 1
-        self.stepper.set_current(3 if is_playlist else 2)
-        # Do NOT auto-start here
+        self.flow_stack.setCurrentIndex(2)
+        self.stepper.set_current(2)
+        # User presses Start in step 4
 
     def _on_downloads_finished(self):
         if self.settings.ui.reset_after_downloads:
@@ -303,6 +312,13 @@ class MainWindow(QMainWindow):
     def _settings_changed(self):
         # Persist changes immediately
         self.settings.ui.auto_advance = self.chk_auto_advance.isChecked()
+        self.settings.ui.auto_fetch_urls = self.chk_auto_fetch_urls.isChecked()
+        self.settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
+        self.settings.ui.live_search = self.chk_live_search.isChecked()
+        self.settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
+        self.settings.ui.clear_input_after_fetch = (
+            self.chk_clear_after_fetch.isChecked()
+        )
         self.settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
         self.settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
         self.settings.app.auto_update = self.chk_app_auto.isChecked()
@@ -381,6 +397,36 @@ def main():
     except Exception:
         pass
     win = MainWindow()
+    win.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
+    app = QApplication(sys.argv)
+    # Guard high-DPI attributes (may not exist in Qt6)
+    try:
+        if hasattr(Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
+            app.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
+        if hasattr(Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
+            app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
+    except Exception:
+        pass
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
+    win.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
+if __name__ == "__main__":
+    main()
     win.show()
     sys.exit(app.exec())
 

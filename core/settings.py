@@ -11,25 +11,31 @@ SETTINGS_PATH = os.path.join(ROOT_DIR, "settings.json")
 class UISettings:
     auto_advance: bool = True
     reset_after_downloads: bool = True
-    accent_color_hex: str = "#F28C28"  # Orange default
+    accent_color_hex: str = "#F28C28"
+    auto_fetch_urls: bool = True
+    auto_search_text: bool = True
+    clear_input_after_fetch: bool = True
+    live_search: bool = True  # New: debounce live search while typing
+    search_debounce_seconds: int = 3  # New: inactivity time before searching
 
 
+# Hidden (For first start only)
 @dataclass
 class DefaultsSettings:
-    kind: str = "audio"  # "audio" or "video"
-    format: str = "mp3"  # "mp3" for audio, "mp4" for video
+    kind: str = "audio"
+    format: str = "mp3"
 
 
 @dataclass
 class YtDlpSettings:
     auto_update: bool = True
-    branch: str = "stable"  # "stable", "nightly", "master"
+    branch: str = "stable"
 
 
 @dataclass
 class AppUpdateSettings:
-    auto_update: bool = False
-    channel: str = "release"
+    auto_update: bool = True
+    channel: str = "prerelease"
 
 
 @dataclass

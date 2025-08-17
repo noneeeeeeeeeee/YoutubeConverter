@@ -31,24 +31,16 @@ class Step3QualityWidget(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
 
-        # Header row (Back)
-        hdr = QHBoxLayout()
-        self.btn_back = QPushButton("Back")
-        hdr.addWidget(self.btn_back)
-        hdr.addStretch(1)
-        lay.addLayout(hdr)
-
         self.lbl = QLabel("Choose what to download:")
         self.lbl.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         lay.addWidget(self.lbl)
 
-        # Small preview list with thumbnails/titles
+        # Small preview list with thumbnails/titles, expands to fill available space
         self.preview = QListWidget()
         self.preview.setIconSize(QSize(96, 54))
-        self.preview.setMaximumHeight(150)
-        lay.addWidget(self.preview)
+        lay.addWidget(self.preview, 1)
 
         # Kind row
         row = QHBoxLayout()
@@ -69,7 +61,10 @@ class Step3QualityWidget(QWidget):
         qrow.addWidget(self.cmb_quality, 1)
         lay.addLayout(qrow)
 
+        # Bottom action row: Back (left) and Next (right)
         btn_row = QHBoxLayout()
+        self.btn_back = QPushButton("Back")
+        btn_row.addWidget(self.btn_back)
         btn_row.addStretch(1)
         self.btn_next = QPushButton("Next")
         btn_row.addWidget(self.btn_next)
@@ -106,6 +101,12 @@ class Step3QualityWidget(QWidget):
             if pix:
                 lw.setIcon(QIcon(pix))
             self.preview.addItem(lw)
+        # Adjust preview height: exactly one row for single video, compact for lists
+        if len(items) <= 1:
+            self.preview.setFixedHeight(self.preview.iconSize().height() + 16)
+        else:
+            self.preview.setMinimumHeight(96)
+            self.preview.setMaximumHeight(150)
         # Refresh quality options according to current kind
         self._populate_quality_options()
 

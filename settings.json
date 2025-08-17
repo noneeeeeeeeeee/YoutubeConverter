@@ -1,13 +1,18 @@
 {
-  "last_download_dir": "C:/Users/JC/Desktop",
+  "last_download_dir": "C:/Users/JC/Desktop/TestBulkDownload",
   "ui": {
     "auto_advance": true,
     "reset_after_downloads": true,
-    "accent_color_hex": "#ff0000"
+    "accent_color_hex": "#ff0000",
+    "auto_fetch_urls": true,
+    "auto_search_text": true,
+    "clear_input_after_fetch": true,
+    "live_search": true,
+    "search_debounce_seconds": 3
   },
   "defaults": {
-    "kind": "video",
-    "format": "mp4"
+    "kind": "audio",
+    "format": "mp3"
   },
   "ytdlp": {
     "auto_update": true,
@@ -15,6 +20,6 @@
   },
   "app": {
     "auto_update": true,
-    "channel": "release"
+    "channel": "prerelease"
   }
 }

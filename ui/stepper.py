@@ -13,7 +13,6 @@ class Stepper(QWidget):
         self._layout.setSpacing(8)
 
     def set_steps(self, steps):
-        # Clear
         for lab in self._labels:
             self._layout.removeWidget(lab)
             lab.deleteLater()

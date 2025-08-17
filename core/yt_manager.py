@@ -1,13 +1,58 @@
 import os
 import sys
-import time
 from typing import Dict, List, Optional, Callable
+from threading import Event  # added
 
 from PyQt6.QtCore import QThread, pyqtSignal
 import yt_dlp
 import subprocess
-import json
 import requests
+import json  # added
+
+# --- yt-dlp binary management (paths and helpers) ---
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+YTDLP_DIR = os.path.join(ROOT_DIR, "yt-dlp-bin")
+YTDLP_EXE = os.path.join(YTDLP_DIR, "yt-dlp.exe")
+
+
+def get_latest_release_info(branch: str) -> dict:
+    # Map branches to repos and asset URLs
+    if branch == "nightly":
+        repo = "yt-dlp/yt-dlp-nightly-builds"
+        api = f"https://api.github.com/repos/{repo}/releases/latest"
+        dl = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
+    elif branch == "master":
+        repo = "yt-dlp/yt-dlp-master-builds"
+        api = f"https://api.github.com/repos/{repo}/releases/latest"
+        dl = "https://github.com/yt-dlp/yt-dlp-master-builds/releases/latest/download/yt-dlp.exe"
+    else:
+        repo = "yt-dlp/yt-dlp"
+        api = f"https://api.github.com/repos/{repo}/releases/latest"
+        dl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+    tag = ""
+    try:
+        r = requests.get(api, timeout=15)
+        r.raise_for_status()
+        rel = r.json()
+        tag = rel.get("tag_name") or rel.get("name") or ""
+    except Exception:
+        pass
+    return {"repo": repo, "api": api, "download_url": dl, "tag": tag}
+
+
+def current_binary_version() -> str:
+    if not os.path.exists(YTDLP_EXE):
+        return ""
+    try:
+        out = subprocess.check_output([YTDLP_EXE, "--version"], timeout=10)
+        # Typical output: 2025.08.11
+        return (out.decode(errors="ignore").strip().split()[0]) if out else ""
+    except Exception:
+        return ""
+
+
+def ensure_ytdlp_dir():
+    os.makedirs(YTDLP_DIR, exist_ok=True)
 
 
 def build_ydl_opts(
@@ -85,13 +130,15 @@ def build_ydl_opts(
         "noplaylist": False,
         "retries": 10,
         "fragment_retries": 10,
+        "socket_timeout": 15,  # add: avoid long hangs
+        "extractor_retries": 2,  # add: limit extractor retries
         "skip_unavailable_fragments": True,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.5",
         },
-        # Use web client to avoid PO Token warnings
-        "extractor_args": {"youtube": {"player_client": ["web"]}},
+        # Prefer TV client to avoid SABR/PO token slow paths
+        "extractor_args": {"youtube": {"player_client": ["tv"]}},
     }
     if progress_hook:
         opts["progress_hooks"] = [progress_hook]
@@ -102,29 +149,72 @@ class InfoFetcher(QThread):
     finished_ok = pyqtSignal(dict)
     finished_fail = pyqtSignal(str)
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, timeout_sec: int = 30):
         super().__init__()
         self.url = url
+        self.timeout_sec = timeout_sec
+
+    def _extract_with_binary(self) -> dict:
+        is_search = isinstance(self.url, str) and self.url.startswith("ytsearch")
+        args = [
+            YTDLP_EXE,
+            "-J",
+            "--ignore-config",
+            "--no-warnings",
+            "--no-progress",
+            "--no-sponsorblock",
+            "--extractor-args",
+            "youtube:player_client=tv",
+        ]
+        if is_search:
+            # Flat metadata for speed
+            args.append("--flat-playlist")
+        args.append(self.url)
+        proc = subprocess.run(
+            args, capture_output=True, text=True, timeout=self.timeout_sec
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "yt-dlp binary failed")
+        if not proc.stdout:
+            raise RuntimeError("Empty response from yt-dlp")
+        return json.loads(proc.stdout)
+
+    def _extract_with_python_api(self) -> dict:
+        is_search = isinstance(self.url, str) and self.url.startswith("ytsearch")
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "noprogress": True,
+            "noplaylist": False,
+            "extract_flat": True if is_search else False,
+            "socket_timeout": 15,
+            "extractor_retries": 2,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.5",
+            },
+            "extractor_args": {"youtube": {"player_client": ["tv"]}},
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(self.url, download=False)
 
     def run(self):
         try:
-            ydl_opts = {
-                "quiet": True,
-                "skip_download": True,
-                "noprogress": True,
-                "noplaylist": False,
-                "extract_flat": False,
-                "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-                    "Accept-Language": "en-US,en;q=0.5",
-                },
-                "extractor_args": {"youtube": {"player_client": ["web"]}},
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(self.url, download=False)
+            # Prefer binary with hard timeout to avoid limbo hangs
+            if os.path.exists(YTDLP_EXE):
+                info = self._extract_with_binary()
+            else:
+                info = self._extract_with_python_api()
             self.finished_ok.emit(info)
+        except subprocess.TimeoutExpired:
+            self.finished_fail.emit("Timed out while fetching info")
         except Exception as e:
-            self.finished_fail.emit(str(e))
+            # Fallback once via Python API if binary failed
+            try:
+                info = self._extract_with_python_api()
+                self.finished_ok.emit(info)
+            except Exception as e2:
+                self.finished_fail.emit(str(e2))
 
 
 class Downloader(QThread):
@@ -151,9 +241,34 @@ class Downloader(QThread):
         self.fmt = fmt
         self.ffmpeg_location = ffmpeg_location
         self.quality = quality or "best"
+        # Control
+        self._pause_evt = Event()
+        self._pause_evt.set()  # running
+        self._stop = False
+
+    # External controls
+    def pause(self):
+        self._pause_evt.clear()
+        for idx, _ in enumerate(self.items):
+            self.itemStatus.emit(idx, "Paused")
+
+    def resume(self):
+        self._pause_evt.set()
+        for idx, _ in enumerate(self.items):
+            self.itemStatus.emit(idx, "Resuming...")
+
+    def is_paused(self) -> bool:
+        return not self._pause_evt.is_set()
+
+    def stop(self):
+        self._stop = True
 
     def _hook_builder(self, idx: int):
         def hook(d):
+            # Pause handling
+            self._pause_evt.wait()
+            if self._stop:
+                raise yt_dlp.utils.DownloadError("Stopped by user")
             if d["status"] == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimated") or 0
                 downloaded = d.get("downloaded_bytes", 0)
@@ -186,6 +301,8 @@ class Downloader(QThread):
                     pass
 
         for idx, it in enumerate(self.items):
+            if self._stop:
+                break
             url = it.get("webpage_url") or it.get("url")
             if not url:
                 self.itemStatus.emit(idx, "Invalid URL")
@@ -202,9 +319,13 @@ class Downloader(QThread):
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url])
-                self.itemProgress.emit(idx, 100.0, 0.0, 0)
-                self.itemStatus.emit(idx, "Done")
+                if not self._stop:
+                    self.itemProgress.emit(idx, 100.0, 0.0, 0)
+                    self.itemStatus.emit(idx, "Done")
             except Exception as e:
+                if self._stop:
+                    self.itemStatus.emit(idx, "Stopped")
+                    break
                 self.itemStatus.emit(idx, f"Error: {e}")
         self.finished_all.emit()
 
@@ -219,34 +340,55 @@ class YtDlpUpdateWorker(QThread):
 
     def run(self):
         try:
-            # Check current version
-            import subprocess
-
-            ver = ""
-            try:
-                out = subprocess.check_output(
-                    [sys.executable, "-m", "yt_dlp", "--version"],
-                    stderr=subprocess.STDOUT,
-                    timeout=30,
-                )
-                ver = out.decode().strip()
-            except Exception:
-                pass
+            ensure_ytdlp_dir()
+            current = current_binary_version()
+            rel = get_latest_release_info(self.branch)
+            latest = rel.get("tag", "")
+            dl_url = rel.get("download_url")
+            # Compare versions when available
             if self.check_only:
-                self.status.emit(f"yt-dlp version: {ver or 'unknown'}")
+                if latest and current:
+                    if current == latest:
+                        self.status.emit(f"yt-dlp binary up-to-date ({current})")
+                    else:
+                        self.status.emit(
+                            f"yt-dlp binary current {current}; latest {latest}"
+                        )
+                elif current:
+                    self.status.emit(f"yt-dlp binary current {current}; latest unknown")
+                else:
+                    self.status.emit("yt-dlp binary not installed")
                 return
 
-            self.status.emit("Updating yt-dlp...")
-            cmd = [sys.executable, "-m", "pip", "install", "-U"]
-            if self.branch == "stable":
-                cmd += ["yt-dlp"]
-            elif self.branch == "nightly":
-                cmd += ["yt-dlp-nightly"]
-            else:  # master
-                cmd += ["git+https://github.com/yt-dlp/yt-dlp@master"]
-            import subprocess
+            # If we know both and are equal, skip download
+            if latest and current and current == latest and os.path.exists(YTDLP_EXE):
+                self.status.emit("yt-dlp is up-to-date.")
+                return
 
-            subprocess.check_call(cmd)
+            # Download/update binary
+            if not dl_url:
+                self.status.emit("Cannot resolve yt-dlp download URL")
+                return
+            self.status.emit("Downloading yt-dlp binary...")
+            tmp_path = YTDLP_EXE + ".tmp"
+            with requests.get(dl_url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(tmp_path, "wb") as f:
+                    for chunk in r.iter_content(256 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            # Replace atomically
+            if os.path.exists(YTDLP_EXE):
+                try:
+                    os.remove(YTDLP_EXE)
+                except Exception:
+                    pass
+            os.replace(tmp_path, YTDLP_EXE)
+            # Ensure executable (mostly for POSIX; no-op on Windows)
+            try:
+                os.chmod(YTDLP_EXE, 0o755)
+            except Exception:
+                pass
             self.status.emit("yt-dlp updated.")
         except Exception as e:
             self.status.emit(f"yt-dlp update failed: {e}")
@@ -314,6 +456,8 @@ class AppUpdateWorker(QThread):
             self.status.emit("App updated.")
             self.updated.emit(True)
         except Exception as e:
+            self.status.emit(f"App update failed: {e}")
+            self.updated.emit(False)
             self.status.emit(f"App update failed: {e}")
             self.updated.emit(False)
             self.updated.emit(True)

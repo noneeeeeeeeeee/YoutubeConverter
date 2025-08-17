@@ -14,7 +14,7 @@ from PyQt6.QtGui import QIcon, QPixmap
 
 
 class Step2PlaylistWidget(QWidget):
-    selectionConfirmed = pyqtSignal(list)  # list of info dicts
+    selectionConfirmed = pyqtSignal(list)
     backRequested = pyqtSignal()
 
     def __init__(self):

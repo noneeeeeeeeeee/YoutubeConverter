@@ -14,6 +14,7 @@ else:
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 YTDLP_DIR = os.path.join(ROOT_DIR, "yt-dlp-bin")
 YTDLP_EXE = os.path.join(YTDLP_DIR, "yt-dlp.exe")
+STAGING_DIR = os.path.join(ROOT_DIR, "_update_staging")  # NEW
 
 
 def get_latest_release_info(branch: str) -> dict:
@@ -216,23 +217,41 @@ class AppUpdateWorker(QThread):
                 self.status.emit("No zip asset found in release.")
                 self.updated.emit(False)
                 return
+
             url = asset.get("browser_download_url")
             name = asset.get("name") or "update.zip"
             self.status.emit(f"Downloading {name}...")
-            tmp_zip = os.path.join(ROOT_DIR, "_update_tmp.zip")
+            os.makedirs(STAGING_DIR, exist_ok=True)  # NEW
+            tmp_zip = os.path.join(STAGING_DIR, "_update_tmp.zip")
             with requests.get(url, stream=True, timeout=60) as r:
                 r.raise_for_status()
                 with open(tmp_zip, "wb") as f:
                     for chunk in r.iter_content(256 * 1024):
                         if chunk:
                             f.write(chunk)
-            self.status.emit("Applying update...")
-            self._extract_zip_flat(tmp_zip, ROOT_DIR)
+
+            self.status.emit("Preparing update...")
+            # Extract into staging (no in-place overwrite while running)
+            # Clean staging before extract
+            for root, dirs, files in os.walk(STAGING_DIR):
+                for fn in files:
+                    if fn != "_update_tmp.zip":
+                        try:
+                            os.remove(os.path.join(root, fn))
+                        except Exception:
+                            pass
+            self._extract_zip_flat(tmp_zip, STAGING_DIR)
             try:
                 os.remove(tmp_zip)
             except Exception:
                 pass
-            self.status.emit("App updated.")
+            # Mark pending update
+            try:
+                with open(os.path.join(STAGING_DIR, ".pending"), "w") as f:
+                    f.write(remote_ver or "")
+            except Exception:
+                pass
+            self.status.emit("Update ready. It will be applied on restart.")
             self.updated.emit(True)
         except Exception as e:
             self.status.emit(f"App update failed: {e}")

@@ -9,7 +9,9 @@ if getattr(__import__("sys"), "frozen", False):
     ROOT_DIR = os.path.dirname(__import__("sys").executable)
 else:
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FF_DIR = os.path.join(ROOT_DIR, "ffmpeg")
+
+# Install directly into root next to the executable
+FF_DIR = ROOT_DIR  # CHANGED: place binaries in program root
 FF_EXE = os.path.join(FF_DIR, "ffmpeg.exe")
 FP_EXE = os.path.join(FF_DIR, "ffprobe.exe")
 
@@ -58,7 +60,6 @@ class FfmpegInstaller(QThread):
                             self.progress.emit(int(downloaded * 100 / total))
             # Extract ffmpeg.exe and ffprobe.exe
             with zipfile.ZipFile(tmp_zip, "r") as z:
-                # Find files
                 names = z.namelist()
                 ffmpeg_name = next(
                     (n for n in names if n.endswith("/bin/ffmpeg.exe")), None
@@ -68,23 +69,27 @@ class FfmpegInstaller(QThread):
                 )
                 if not ffmpeg_name or not ffprobe_name:
                     raise RuntimeError("ffmpeg.exe or ffprobe.exe not found in archive")
+                # Extract to a temp dir inside FF_DIR to then flatten
                 z.extract(ffmpeg_name, FF_DIR)
                 z.extract(ffprobe_name, FF_DIR)
-                # Move from nested folder to FF_DIR root
                 src_ff = os.path.join(FF_DIR, ffmpeg_name)
                 src_fp = os.path.join(FF_DIR, ffprobe_name)
-                final_ff = os.path.join(FF_DIR, "ffmpeg.exe")
-                final_fp = os.path.join(FF_DIR, "ffprobe.exe")
                 # Ensure parent dir
                 os.makedirs(FF_DIR, exist_ok=True)
-                # Move/replace
-                if os.path.exists(final_ff):
-                    os.remove(final_ff)
-                if os.path.exists(final_fp):
-                    os.remove(final_fp)
-                os.replace(src_ff, final_ff)
-                os.replace(src_fp, final_fp)
-                # Cleanup extracted dirs
+                # Move/replace to FF_DIR root (program root)
+                if os.path.exists(FF_EXE):
+                    try:
+                        os.remove(FF_EXE)
+                    except Exception:
+                        pass
+                if os.path.exists(FP_EXE):
+                    try:
+                        os.remove(FP_EXE)
+                    except Exception:
+                        pass
+                os.replace(src_ff, FF_EXE)
+                os.replace(src_fp, FP_EXE)
+                # Cleanup extracted nested dirs
                 top = ffmpeg_name.split("/")[0]
                 top_dir = os.path.join(FF_DIR, top)
                 if os.path.isdir(top_dir):

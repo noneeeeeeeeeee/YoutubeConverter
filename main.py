@@ -23,6 +23,39 @@ def _app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+# Global exception handler: write error to file and show dialog instead of hard crash
+def _install_exception_handler():
+    def _hook(exctype, value, tb):
+        try:
+            import traceback
+
+            msg = "".join(traceback.format_exception(exctype, value, tb))
+            # Write to error.log in app directory
+            try:
+                with open(
+                    os.path.join(_app_dir(), "error.log"), "a", encoding="utf-8"
+                ) as f:
+                    f.write(msg + "\n")
+            except Exception:
+                pass
+            # Try to show a dialog (create a minimal app if needed)
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+
+                app = QApplication.instance() or QApplication(sys.argv)
+                QMessageBox.critical(None, "Unexpected Error", msg[:8000])  # cap length
+            except Exception:
+                pass
+        finally:
+            # Do not forcibly exit; let Qt/Python continue if possible
+            sys.__excepthook__(exctype, value, tb)
+
+    sys.excepthook = _hook
+
+
+_install_exception_handler()
+
+# Ensure Requests can find certificates in frozen builds
 try:
     import certifi
 
@@ -329,10 +362,49 @@ class MainWindow(QMainWindow):
 
         def _after(updated: bool):
             if updated:
-                self.toast.show("Restarting to finish update...")
-                # Restart app
-                python = sys.executable
-                os.execv(python, [python] + sys.argv)
+                # Apply pending update with elevation (if needed), then restart
+                root = _app_dir()
+                staging = os.path.join(root, "_update_staging")
+                if os.path.isdir(staging):
+                    pid = os.getpid()
+                    exe = sys.executable
+                    # Build elevated PowerShell one-liner
+                    ps_cmd = (
+                        f"$pid={pid};"
+                        f"Start-Process -Verb RunAs powershell -ArgumentList "
+                        f"'-NoProfile','-ExecutionPolicy','Bypass','-Command',"
+                        f'"Wait-Process -Id $pid; '
+                        f"Copy-Item -Path '{staging}\\*' -Destination '{root}' -Recurse -Force; "
+                        f"Remove-Item -Path '{staging}' -Recurse -Force; "
+                        f"Start-Process -FilePath '{exe}'\""
+                    )
+                    try:
+                        # Spawn updater and exit current app
+                        import subprocess
+
+                        subprocess.Popen(
+                            ["powershell", "-NoProfile", "-Command", ps_cmd],
+                            shell=False,
+                        )
+                    except Exception:
+                        # Fallback: try non-elevated copy (may fail), then restart
+                        try:
+                            import shutil
+
+                            for name in os.listdir(staging):
+                                src = os.path.join(staging, name)
+                                dst = os.path.join(root, name)
+                                if os.path.isdir(src):
+                                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                                else:
+                                    shutil.copy2(src, dst)
+                            shutil.rmtree(staging, ignore_errors=True)
+                            subprocess.Popen([exe])
+                        except Exception:
+                            pass
+                    # Terminate current process to allow replacement
+                    QApplication.quit()
+                    return
 
         self.app_up_thread.updated.connect(_after)
         self.app_up_thread.start()

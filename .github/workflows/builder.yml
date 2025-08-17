@@ -38,14 +38,17 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path YTConverter | Out-Null
-          # Keep original PyInstaller output name
-          Copy-Item -Path dist\main.exe -Destination YTConverter\main.exe
+          # Rename packaged executable
+          Copy-Item -Path dist\main.exe -Destination YTConverter\YoutubeConverter.exe
           # Version file next to exe
           if (Test-Path version.txt) {
             Copy-Item version.txt YTConverter\version.txt
           } else {
             '0.0.0' | Out-File -Encoding ascii YTConverter\version.txt
           }
+          # For nightly builds, rewrite version to include short commit
+          $short = $env:GITHUB_SHA.Substring(0,7)
+          "Nightly Build $short" | Out-File -Encoding ascii YTConverter\version.txt -Force
           # Copy CA bundle next to exe for requests (PowerShell-friendly)
           $cacert = & python -c "import certifi, sys; print(certifi.where(), end='')"
           if ($cacert -and (Test-Path $cacert)) {
@@ -54,10 +57,8 @@ jobs:
           # Nightly zip
           $nightlyZip = "YoutubeConverter_Nightly.zip"
           Compress-Archive -Path YTConverter\* -DestinationPath $nightlyZip -Force
-          # Versioned zip
-          $ver = (Get-Content -Raw version.txt) 2>$null
-          if (-not $ver) { $ver = "0.0.0" }
-          $ver = $ver.Trim()
+          # Versioned zip (stable/prerelease draft name still from version.txt content)
+          $ver = (Get-Content -Raw YTConverter\version.txt).Trim()
           $safe = $ver -replace '[^\w\.\-]','_'
           $verZip = "YoutubeConverter_$safe.zip"
           Compress-Archive -Path YTConverter\* -DestinationPath $verZip -Force

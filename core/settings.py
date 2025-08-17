@@ -2,9 +2,19 @@ import json
 import os
 from dataclasses import dataclass, asdict, field
 
+
+def _user_config_dir() -> str:
+    base = os.getenv("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "YoutubeConverter")
+
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(APP_DIR)
-SETTINGS_PATH = os.path.join(ROOT_DIR, "settings.json")
+# Old location (legacy)
+LEGACY_SETTINGS_PATH = os.path.join(ROOT_DIR, "settings.json")
+# New per-user location
+SETTINGS_DIR = _user_config_dir()
+SETTINGS_PATH = os.path.join(SETTINGS_DIR, "settings.json")
 
 
 @dataclass
@@ -54,6 +64,17 @@ class AppSettings:
 
 class SettingsManager:
     def load(self) -> AppSettings:
+        # Migrate from legacy path if needed
+        if not os.path.exists(SETTINGS_PATH) and os.path.exists(LEGACY_SETTINGS_PATH):
+            try:
+                os.makedirs(SETTINGS_DIR, exist_ok=True)
+                with open(LEGACY_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                    legacy = f.read()
+                with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                    f.write(legacy)
+            except Exception:
+                pass
+
         if not os.path.exists(SETTINGS_PATH):
             return AppSettings()
         try:
@@ -78,5 +99,6 @@ class SettingsManager:
 
     def save(self, settings: AppSettings):
         data = asdict(settings)
+        os.makedirs(SETTINGS_DIR, exist_ok=True)
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)

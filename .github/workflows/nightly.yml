@@ -1,9 +1,12 @@
-name: Nightly Release
+name: Nightly + Draft Release
 
 on:
   push:
     branches:
       - main
+
+permissions:
+  contents: write # required for creating/updating tags and uploading assets
 
 jobs:
   build-nightly:
@@ -15,7 +18,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install build deps
         shell: pwsh
@@ -23,14 +26,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller
           if (Test-Path requirements.txt) { pip install -r requirements.txt }
-          # Ensure runtime deps
+          # Ensure runtime deps for build
           pip install PyQt6 yt-dlp requests
 
       - name: Build EXE
         shell: pwsh
         run: pyinstaller main.py --onefile --windowed
 
-      - name: Prepare package
+      - name: Prepare Nightly package
+        id: nightly_pkg
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path YoutubeConverter | Out-Null
@@ -40,7 +44,19 @@ jobs:
           } else {
             '0.0.0' | Out-File -Encoding ascii YoutubeConverter\version.txt
           }
-          Compress-Archive -Path YoutubeConverter\* -DestinationPath YoutubeConverter-nightly.zip -Force
+          $nightlyZip = "YoutubeConverter_Nightly.zip"
+          Compress-Archive -Path YoutubeConverter\* -DestinationPath $nightlyZip -Force
+          # derive versioned name as well
+          $ver = (Get-Content -Raw version.txt) 2>$null
+          if (-not $ver) { $ver = "0.0.0" }
+          $ver = $ver.Trim()
+          $safe = $ver -replace '[^\w\.\-]','_'
+          $verZip = "YoutubeConverter_$safe.zip"
+          Compress-Archive -Path YoutubeConverter\* -DestinationPath $verZip -Force
+          # outputs
+          echo "nightly_zip=$nightlyZip" >> $env:GITHUB_OUTPUT
+          echo "ver_zip=$verZip" >> $env:GITHUB_OUTPUT
+          echo "ver=$ver" >> $env:GITHUB_OUTPUT
 
       - name: Upload Nightly Pre-release
         uses: marvinpinto/action-automatic-releases@latest
@@ -50,4 +66,22 @@ jobs:
           prerelease: true
           title: "Nightly Build"
           files: |
-            YoutubeConverter-nightly.zip
+            ${{ steps.nightly_pkg.outputs.nightly_zip }}
+
+      - name: Update Release Draft
+        id: draft
+        uses: release-drafter/release-drafter@v5
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload asset to Draft Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.draft.outputs.upload_url }}
+          asset_path: ${{ steps.nightly_pkg.outputs.ver_zip }}
+          asset_name: ${{ steps.nightly_pkg.outputs.ver_zip }}
+          asset_content_type: application/zip

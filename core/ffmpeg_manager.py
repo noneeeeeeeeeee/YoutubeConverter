@@ -5,7 +5,10 @@ import zipfile
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if getattr(__import__("sys"), "frozen", False):
+    ROOT_DIR = os.path.dirname(__import__("sys").executable)
+else:
+    ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FF_DIR = os.path.join(ROOT_DIR, "ffmpeg")
 FF_EXE = os.path.join(FF_DIR, "ffmpeg.exe")
 FP_EXE = os.path.join(FF_DIR, "ffprobe.exe")

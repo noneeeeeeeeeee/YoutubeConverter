@@ -15,11 +15,21 @@ from PyQt6.QtWidgets import (
     QScrollArea,  # added
 )
 
+
+def _app_dir() -> str:
+    # Prefer the executable directory when frozen
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 try:
     import certifi
 
-    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+    local_ca = os.path.join(_app_dir(), "cacert.pem")
+    ca_path = local_ca if os.path.isfile(local_ca) else certifi.where()
+    os.environ.setdefault("SSL_CERT_FILE", ca_path)
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_path)
 except Exception:
     pass
 
@@ -38,8 +48,7 @@ from widgets.settings_page import SettingsPage
 
 def _read_version_from_file() -> str:
     try:
-        here = os.path.dirname(os.path.abspath(__file__))
-        ver_path = os.path.join(here, "version.txt")
+        ver_path = os.path.join(_app_dir(), "version.txt")
         if os.path.exists(ver_path):
             with open(ver_path, "r", encoding="utf-8") as f:
                 return f.read().strip()

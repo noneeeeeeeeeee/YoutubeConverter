@@ -8,7 +8,10 @@ from typing import Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 
 # Paths shared with yt_manager
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if getattr(sys, "frozen", False):
+    ROOT_DIR = os.path.dirname(sys.executable)
+else:
+    ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 YTDLP_DIR = os.path.join(ROOT_DIR, "yt-dlp-bin")
 YTDLP_EXE = os.path.join(YTDLP_DIR, "yt-dlp.exe")
 

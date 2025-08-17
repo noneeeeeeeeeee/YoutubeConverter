@@ -144,13 +144,32 @@ class AppUpdateWorker(QThread):
 
     def _get_release_json(self) -> Optional[dict]:
         base = f"https://api.github.com/repos/{self.repo}/releases"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "YoutubeConverter-Updater",
+        }
         try:
             if self.channel == "nightly":
+                # Try dedicated endpoint for a release by tag
                 url = f"{base}/tags/nightly"
-                r = requests.get(url, timeout=20)
+                r = requests.get(url, headers=headers, timeout=20)
+                if r.status_code == 404:
+                    # Fallback: list releases and pick tag_name == nightly
+                    rl = requests.get(base, headers=headers, timeout=20)
+                    rl.raise_for_status()
+                    releases = rl.json() or []
+                    return next(
+                        (
+                            x
+                            for x in releases
+                            if (x.get("tag_name") or "").lower() == "nightly"
+                        ),
+                        None,
+                    )
                 r.raise_for_status()
                 return r.json()
-            r = requests.get(base, timeout=20)
+            # Non-nightly channels
+            r = requests.get(base, headers=headers, timeout=20)
             r.raise_for_status()
             releases = r.json() or []
             if self.channel == "release":
@@ -195,7 +214,11 @@ class AppUpdateWorker(QThread):
                 self.status.emit("No releases found.")
                 self.updated.emit(False)
                 return
-            tag = rel.get("tag_name") or rel.get("name") or ""
+            # Prefer the release title for nightly to match "Nightly Build {sha}"
+            if self.channel == "nightly":
+                tag = rel.get("name") or rel.get("tag_name") or ""
+            else:
+                tag = rel.get("tag_name") or rel.get("name") or ""
             remote_ver = (tag or "").strip()
             local_ver = self._local_version()
             if not self.do_update:

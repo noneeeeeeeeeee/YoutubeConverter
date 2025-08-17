@@ -38,34 +38,37 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path YTConverter | Out-Null
-          # Rename packaged executable
           Copy-Item -Path dist\main.exe -Destination YTConverter\YoutubeConverter.exe
-          # Version file next to exe
+          # Repo version (for draft)
           if (Test-Path version.txt) {
+            $repoVer = (Get-Content -Raw version.txt).Trim()
             Copy-Item version.txt YTConverter\version.txt
           } else {
+            $repoVer = "0.0.0"
             '0.0.0' | Out-File -Encoding ascii YTConverter\version.txt
           }
-          # For nightly builds, rewrite version to include short commit
+          # Nightly version (inside nightly zip only)
           $short = $env:GITHUB_SHA.Substring(0,7)
-          "Nightly Build $short" | Out-File -Encoding ascii YTConverter\version.txt -Force
-          # Copy CA bundle next to exe for requests (PowerShell-friendly)
+          $nightlyVer = "Nightly Build $short"
+          $nightlyVer | Out-File -Encoding ascii YTConverter\version.txt -Force
+          # Copy CA bundle next to exe
           $cacert = & python -c "import certifi, sys; print(certifi.where(), end='')"
           if ($cacert -and (Test-Path $cacert)) {
             Copy-Item $cacert YTConverter\cacert.pem -Force
           }
-          # Nightly zip
+          # Nightly zip (uses Nightly Build {sha} inside)
           $nightlyZip = "YoutubeConverter_Nightly.zip"
           Compress-Archive -Path YTConverter\* -DestinationPath $nightlyZip -Force
-          # Versioned zip (stable/prerelease draft name still from version.txt content)
-          $ver = (Get-Content -Raw YTConverter\version.txt).Trim()
-          $safe = $ver -replace '[^\w\.\-]','_'
+          # Draft zip (restore repo version)
+          $repoVer | Out-File -Encoding ascii YTConverter\version.txt -Force
+          $safe = $repoVer -replace '[^\w\.\-]','_'
           $verZip = "YoutubeConverter_$safe.zip"
           Compress-Archive -Path YTConverter\* -DestinationPath $verZip -Force
-          # outputs via Environment Files
+          # outputs
           "nightly_zip=$nightlyZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "nightly_ver=$nightlyVer" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "ver_zip=$verZip"         | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "ver=$ver"                | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "ver=$repoVer"            | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload Nightly Pre-release
         uses: marvinpinto/action-automatic-releases@latest
@@ -73,7 +76,7 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           automatic_release_tag: nightly
           prerelease: true
-          title: "Nightly Build"
+          title: ${{ steps.nightly_pkg.outputs.nightly_ver }} # include short SHA
           files: |
             ${{ steps.nightly_pkg.outputs.nightly_zip }}
 

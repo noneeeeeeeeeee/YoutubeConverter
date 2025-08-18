@@ -38,7 +38,7 @@ class SettingsPage(QWidget):
         )
         frm_note.addRow(
             QLabel(
-                "If anything is bricked, delete the settings.json and it will reset everything back."
+                "If anything is bricked, delete the settings.json and it will reset everything back. Located at %APPDATA%/Roaming/YoutubeConverter/"
             )
         )
         lay.addWidget(grp_note)

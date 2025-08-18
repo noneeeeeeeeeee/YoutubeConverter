@@ -179,24 +179,8 @@ class Step1LinkWidget(QWidget):
         self.txt.setText(txt)
         # Cancel any in-flight fetch and start fresh
         self._cancel_fetch()
-        # Classify and handle fast-paste policy
-        if not YOUTUBE_URL_RE.match(txt):
-            self._maybe_auto_fetch()
-            return
-        kind, norm = self._classify_url(txt)
-        if kind == "radio":
-            self.lbl_status.setText("Radio playlists are not supported.")
-            return
-        if kind == "playlist":
-            if not self.chk_multi.isChecked():
-                self.chk_multi.setChecked(True)
-            self._start_fetch(norm)
-            return
-        # single
-        if getattr(self.settings.ui, "fast_paste_enabled", True):
-            if self._try_fast_single_url(norm):
-                return
-        self._start_fetch(norm)
+        # Unified processing
+        self._process_text(txt, trigger="paste")  # NEW
 
     # --- typing and debounce handling ---
     def _on_text_changed(self, _text: str):
@@ -206,31 +190,8 @@ class Step1LinkWidget(QWidget):
             return
         # Cancel in-flight fetch when typing resumes
         self._cancel_fetch()
-        # URLs: auto flow (always on now)
-        if YOUTUBE_URL_RE.match(q):
-            kind, norm = self._classify_url(q)
-            if kind == "radio":
-                self.lbl_status.setText("Radio playlists are not supported.")
-                return
-            if kind == "playlist":
-                if not self.chk_multi.isChecked():
-                    self.chk_multi.setChecked(True)
-                self._start_fetch(norm)
-                return
-            # single: attempt fast link paste even from typing
-            if getattr(self.settings.ui, "fast_paste_enabled", True):
-                if self._try_fast_single_url(norm):
-                    return
-            self._start_fetch(norm)
-            return
-        # Text search
-        if not self.settings.ui.auto_search_text:
-            return
-        if getattr(self.settings.ui, "live_search", False):
-            secs = max(0, int(getattr(self.settings.ui, "search_debounce_seconds", 3)))
-            self.search_timer.start(secs * 1000)
-        else:
-            self.search_timer.stop()
+        # Unified processing with debounce handling embedded
+        self._process_text(q, trigger="typing")  # NEW
 
     def _do_debounced_search(self):
         q = self.txt.text().strip()
@@ -242,46 +203,52 @@ class Step1LinkWidget(QWidget):
         q = self.txt.text().strip()
         if not q:
             return
-        if YOUTUBE_URL_RE.match(q):
-            kind, norm = self._classify_url(q)
-            if kind == "radio":
-                self.lbl_status.setText("Radio playlists are not supported.")
-                return
-            if kind == "playlist":
-                if not self.chk_multi.isChecked():
-                    self.chk_multi.setChecked(True)
-                self._start_fetch(norm)
-                return
-            # single
-            if self._try_fast_single_url(norm):
-                return
-            self._start_fetch(norm)
-        else:
-            self._start_fetch(f"ytsearch20:{q}")
+        self._process_text(q, trigger="enter")  # NEW
 
     def _maybe_auto_fetch(self):
+        # Route to unified handler to keep behavior consistent
         q = self.txt.text().strip()
         if not q:
             return
-        if YOUTUBE_URL_RE.match(q):
-            # Always auto-fetch URLs now
-            kind, norm = self._classify_url(q)
-            if kind == "radio":
-                self.lbl_status.setText("Radio playlists are not supported.")
-                return
-            if kind == "playlist":
-                if not self.chk_multi.isChecked():
-                    self.chk_multi.setChecked(True)
-                self._start_fetch(norm)
-                return
-            # single
+        self._process_text(q, trigger="auto")  # NEW
+
+    # NEW: single entry point for handling text/URL inputs from any source
+    def _process_text(self, text: str, trigger: str = "typing"):
+        is_url = bool(YOUTUBE_URL_RE.match(text))
+        if is_url:
+            kind, norm = self._classify_url(text)
+            self._handle_url(kind, norm)
+            return
+        # Text search: honor debounce prefs
+        if not self.settings.ui.auto_search_text:
+            return
+        if getattr(self.settings.ui, "live_search", False):
+            secs = max(0, int(getattr(self.settings.ui, "search_debounce_seconds", 3)))
+            self.search_timer.start(secs * 1000)
+        else:
+            # Immediate search for non-live mode on enter/paste
+            if trigger in ("enter", "paste"):
+                self._start_fetch(f"ytsearch20:{text}")
+            else:
+                self.search_timer.stop()
+
+    # NEW: centralized URL flow handling (single/playlist/radio)
+    def _handle_url(self, kind: str, norm: str):
+        if kind == "radio":
+            self.lbl_status.setText("Radio playlists are not supported.")
+            return
+        if kind == "playlist":
+            if not self.chk_multi.isChecked():
+                self.chk_multi.setChecked(True)
+            self._start_fetch(norm)
+            return
+        # single video
+        if getattr(self.settings.ui, "fast_paste_enabled", True):
             if self._try_fast_single_url(norm):
                 return
-            self._start_fetch(norm)
-        else:
-            if self.settings.ui.auto_search_text:
-                self._start_fetch(f"ytsearch20:{q}")
+        self._start_fetch(norm)
 
+    # --- core logic (unchanged) ---
     def _classify_url(self, url: str) -> Tuple[str, str]:
         """
         Returns (kind, normalized_url)
@@ -787,6 +754,39 @@ class Step1LinkWidget(QWidget):
     def _remove_from_selected_prompt(self, item: QListWidgetItem):
         info = item.data(Qt.ItemDataRole.UserRole) or {}
         url = info.get("webpage_url") or info.get("url")
+        title = info.get("title") or "Untitled"
+        if not url:
+            return
+        if (
+            QMessageBox.question(
+                self, "Remove video", f"Remove '{title}' from selected?"
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            # Remove from selection
+            self.selected = [
+                it
+                for it in self.selected
+                if (it.get("webpage_url") or it.get("url")) != url
+            ]
+            self._refresh_selected_list()
+            # Update playlist styling for this item, if present there
+            for i in range(self.playlist_list.count()):
+                pit = self.playlist_list.item(i)
+                pdata = pit.data(Qt.ItemDataRole.UserRole) or {}
+                pu = pdata.get("webpage_url") or pdata.get("url")
+                if pu == url:
+                    self._style_playlist_item(pit, False)
+                    break
+            # Hide tab if empty
+            self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
+
+    # "Next" in multi-select mode: emit all selected infos
+    def _confirm_selection(self):
+        if not self.selected:
+            QMessageBox.information(self, "No videos", "No videos selected.")
+            return
+        self.selectionConfirmed.emit(list(self.selected))
         title = info.get("title") or "Untitled"
         if not url:
             return

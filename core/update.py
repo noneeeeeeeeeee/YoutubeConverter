@@ -41,17 +41,22 @@ def get_latest_release_info(branch: str) -> dict:
     return {"repo": repo, "api": api, "download_url": dl, "tag": tag}
 
 
+def _hidden_subprocess_kwargs():  # NEW
+    kwargs = {}
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        kwargs["startupinfo"] = si
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
+
+
 def current_binary_version() -> str:
     if not os.path.exists(YTDLP_EXE):
         return ""
     try:
-        kwargs = {}
-        if os.name == "nt":
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
-            kwargs["startupinfo"] = si
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        kwargs = _hidden_subprocess_kwargs()  # CHANGED
         out = subprocess.check_output([YTDLP_EXE, "--version"], timeout=10, **kwargs)
         return (out.decode(errors="ignore").strip().split()[0]) if out else ""
     except Exception:
@@ -65,13 +70,7 @@ def ensure_ytdlp_dir():
 def clear_ytdlp_cache():
     try:
         if os.path.exists(YTDLP_EXE):
-            kwargs = {}
-            if os.name == "nt":
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                si.wShowWindow = 0
-                kwargs["startupinfo"] = si
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            kwargs = _hidden_subprocess_kwargs()  # CHANGED
             subprocess.run([YTDLP_EXE, "--rm-cache-dir"], timeout=15, **kwargs)
     except Exception:
         pass
@@ -327,4 +326,5 @@ if __name__ == "__main__":
         print(f"Remote version (nightly): {remote_ver}")
         print("Update available:", remote_ver != local_ver)
     else:
+        print("No nightly release found.")
         print("No nightly release found.")

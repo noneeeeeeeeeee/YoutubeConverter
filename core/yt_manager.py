@@ -8,7 +8,27 @@ import yt_dlp
 import subprocess
 import requests
 import json  # added
-from core.update import YTDLP_EXE  # NEW: use shared path from update module
+from core.update import YTDLP_EXE  # NEW
+
+# Reuse common headers/extractor args across calls (NEW)
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+EXTRACTOR_ARGS = {  # used for Python API metadata paths
+    "youtube": {"player_client": ["tv"], "skip": ["dash", "hls"]},
+    "youtubetab": {"skip": ["webpage"]},
+}
+
+
+def _win_no_window_kwargs():  # NEW
+    if os.name != "nt":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0
+    return {"startupinfo": si, "creationflags": subprocess.CREATE_NO_WINDOW}
+
 
 # --- keep only media-related helpers below ---
 
@@ -88,16 +108,13 @@ def build_ydl_opts(
         "noplaylist": False,
         "retries": 10,
         "fragment_retries": 10,
-        "socket_timeout": 15,  # add: avoid long hangs
-        "extractor_retries": 2,  # add: limit extractor retries
+        "socket_timeout": 15,
+        "extractor_retries": 2,
         "skip_unavailable_fragments": True,
-        # Disable disk cache to avoid slowdowns and stale data
+        # Disable disk cache
         "cachedir": False,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.5",
-        },
-        # Prefer TV client to avoid SABR/PO token slow paths
+        "http_headers": HTTP_HEADERS,  # CHANGED
+        # Keep only player_client for downloads as before (no change in behavior)
         "extractor_args": {"youtube": {"player_client": ["tv"]}},
     }
     if progress_hook:
@@ -152,16 +169,7 @@ class InfoFetcher(QThread):
 
         env = os.environ.copy()
         env["YTDLP_NO_PLUGINS"] = "1"
-
-        # NEW: hide console window on Windows
-        kwargs = {}
-        if os.name == "nt":
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
-            kwargs["startupinfo"] = si
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
+        kwargs = _win_no_window_kwargs()  # CHANGED
         proc = subprocess.run(
             args,
             capture_output=True,
@@ -187,16 +195,9 @@ class InfoFetcher(QThread):
             "extract_flat": True if (is_search or is_playlist) else False,
             "socket_timeout": 15,
             "extractor_retries": 1 if (is_search or is_playlist) else 2,
-            # Disable disk cache
             "cachedir": False,
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.5",
-            },
-            "extractor_args": {
-                "youtube": {"player_client": ["tv"], "skip": ["dash", "hls"]},
-                "youtubetab": {"skip": ["webpage"]},
-            },
+            "http_headers": HTTP_HEADERS,  # CHANGED
+            "extractor_args": EXTRACTOR_ARGS,  # CHANGED
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(self.url, download=False)
@@ -420,14 +421,8 @@ class Downloader(QThread):
             "socket_timeout": 15,
             "extractor_retries": 1,
             "cachedir": False,
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.5",
-            },
-            "extractor_args": {
-                "youtube": {"player_client": ["tv"], "skip": ["dash", "hls"]},
-                "youtubetab": {"skip": ["webpage"]},
-            },
+            "http_headers": HTTP_HEADERS,  # CHANGED
+            "extractor_args": EXTRACTOR_ARGS,  # CHANGED
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url, download=False)

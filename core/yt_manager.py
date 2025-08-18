@@ -421,8 +421,8 @@ class Downloader(QThread):
             "socket_timeout": 15,
             "extractor_retries": 1,
             "cachedir": False,
-            "http_headers": HTTP_HEADERS,  # CHANGED
-            "extractor_args": EXTRACTOR_ARGS,  # CHANGED
+            "http_headers": HTTP_HEADERS,
+            "extractor_args": EXTRACTOR_ARGS,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url, download=False)

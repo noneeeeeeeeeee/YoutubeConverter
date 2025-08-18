@@ -787,32 +787,6 @@ class Step1LinkWidget(QWidget):
             QMessageBox.information(self, "No videos", "No videos selected.")
             return
         self.selectionConfirmed.emit(list(self.selected))
-        title = info.get("title") or "Untitled"
-        if not url:
-            return
-        if (
-            QMessageBox.question(
-                self, "Remove video", f"Remove '{title}' from selected?"
-            )
-            == QMessageBox.StandardButton.Yes
-        ):
-            # Remove from selection
-            self.selected = [
-                it
-                for it in self.selected
-                if (it.get("webpage_url") or it.get("url")) != url
-            ]
-            self._refresh_selected_list()
-            # Update playlist styling for this item, if present there
-            for i in range(self.playlist_list.count()):
-                pit = self.playlist_list.item(i)
-                pdata = pit.data(Qt.ItemDataRole.UserRole) or {}
-                pu = pdata.get("webpage_url") or pdata.get("url")
-                if pu == url:
-                    self._style_playlist_item(pit, False)
-                    break
-            # Hide tab if empty
-            self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
 
     # "Next" in multi-select mode: emit all selected infos
     def _confirm_selection(self):

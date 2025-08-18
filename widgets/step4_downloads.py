@@ -97,6 +97,13 @@ class Step4DownloadsWidget(QWidget):
         lay.addWidget(self.list, 1)
 
     def configure(self, selection: Dict, settings: AppSettings):
+        # Reset any previous downloader session
+        if self.downloader:
+            try:
+                self.downloader.stop()
+            except Exception:
+                pass
+            self.downloader = None
         self.items = selection.get("items", [])
         self.kind = selection.get("kind", settings.defaults.kind)
         self.fmt = selection.get("format", settings.defaults.format)
@@ -132,7 +139,9 @@ class Step4DownloadsWidget(QWidget):
             item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
+        # Reset controls for a fresh session
         self.btn_start.setEnabled(True)
+        self.btn_start.setText("Start")  # NEW: ensure correct label
         self.btn_done.setVisible(False)
         self.btn_stop.setEnabled(False)
 
@@ -236,7 +245,12 @@ class Step4DownloadsWidget(QWidget):
 
     def _stop_downloads(self):
         if self.downloader:
-            self.downloader.stop()
+            try:
+                self.downloader.stop()
+            except Exception:
+                pass
+            self.downloader = None  # NEW: allow fresh start after stop
+        self.btn_start.setText("Start")  # NEW: reset label
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(False)
 
@@ -285,6 +299,8 @@ class Step4DownloadsWidget(QWidget):
         self.btn_done.setVisible(True)
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(False)
+        self.btn_start.setText("Start")  # NEW: reset label after completion
+        self.downloader = None  # NEW: clear downloader so next run can start
         if self.settings.ui.reset_after_downloads:
             self.btn_done.setText("Reset")
         else:
@@ -298,5 +314,7 @@ class Step4DownloadsWidget(QWidget):
     def reset(self):
         self.list.clear()
         self.items = []
+        self.downloader = None  # NEW: ensure cleared on reset
+        self.btn_start.setText("Start")  # NEW: ensure label is correct after reset
         self.btn_start.setEnabled(False)
         self.btn_done.setVisible(False)

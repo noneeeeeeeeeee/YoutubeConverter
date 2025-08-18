@@ -188,10 +188,19 @@ class AppUpdateWorker(QThread):
             releases = r.json() or []
             if self.channel == "release":
                 return next((x for x in releases if not x.get("prerelease")), None)
+            elif self.channel == "prerelease":
+                return next(
+                    (
+                        x
+                        for x in releases
+                        if x.get("prerelease")
+                        and (x.get("tag_name") or "").lower() != "nightly"
+                    ),
+                    None,
+                ) or next((x for x in releases if x.get("prerelease")), None)
             else:
-                return next((x for x in releases if x.get("prerelease")), None) or (
-                    releases[0] if releases else None
-                )
+                # Fallback: first entry if channel is unknown
+                return releases[0] if releases else None
         except Exception:
             return None
 

@@ -97,7 +97,7 @@ APP_REPO = "noneeeeeeeeeee/YoutubeConverter"
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"YouTube Converter {APP_VERSION}")
+        self.setWindowTitle(f"YouTube Converter - {APP_VERSION}")
         self.setMinimumSize(1024, 640)
         self.settings_mgr = SettingsManager()
         self.settings: AppSettings = self.settings_mgr.load()

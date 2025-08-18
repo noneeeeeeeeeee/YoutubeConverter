@@ -136,10 +136,9 @@ class InfoFetcher(QThread):
             "--skip-download",
             "--no-write-comments",
             "--no-write-playlist-metafiles",
-            "--no-cache-dir",  # NEW: disable cache
+            "--no-cache-dir",
             "--extractor-retries",
             "1",
-            # extractor args (can repeat)
             "--extractor-args",
             "youtube:player_client=tv",
             "--extractor-args",
@@ -147,7 +146,6 @@ class InfoFetcher(QThread):
             "--extractor-args",
             "youtubetab:skip=webpage",
         ]
-        # Flat metadata is faster for searches and playlists
         if is_search or is_playlist:
             args.append("--flat-playlist")
         args.append(self.url)
@@ -155,8 +153,22 @@ class InfoFetcher(QThread):
         env = os.environ.copy()
         env["YTDLP_NO_PLUGINS"] = "1"
 
+        # NEW: hide console window on Windows
+        kwargs = {}
+        if os.name == "nt":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            kwargs["startupinfo"] = si
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=self.timeout_sec, env=env
+            args,
+            capture_output=True,
+            text=True,
+            timeout=self.timeout_sec,
+            env=env,
+            **kwargs,
         )
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "yt-dlp binary failed")

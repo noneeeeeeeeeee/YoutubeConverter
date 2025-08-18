@@ -45,7 +45,14 @@ def current_binary_version() -> str:
     if not os.path.exists(YTDLP_EXE):
         return ""
     try:
-        out = subprocess.check_output([YTDLP_EXE, "--version"], timeout=10)
+        kwargs = {}
+        if os.name == "nt":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            kwargs["startupinfo"] = si
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        out = subprocess.check_output([YTDLP_EXE, "--version"], timeout=10, **kwargs)
         return (out.decode(errors="ignore").strip().split()[0]) if out else ""
     except Exception:
         return ""
@@ -58,7 +65,14 @@ def ensure_ytdlp_dir():
 def clear_ytdlp_cache():
     try:
         if os.path.exists(YTDLP_EXE):
-            subprocess.run([YTDLP_EXE, "--rm-cache-dir"], timeout=15)
+            kwargs = {}
+            if os.name == "nt":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0
+                kwargs["startupinfo"] = si
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            subprocess.run([YTDLP_EXE, "--rm-cache-dir"], timeout=15, **kwargs)
     except Exception:
         pass
 
@@ -221,6 +235,12 @@ class AppUpdateWorker(QThread):
                 tag = rel.get("tag_name") or rel.get("name") or ""
             remote_ver = (tag or "").strip()
             local_ver = self._local_version()
+
+            if remote_ver and local_ver and remote_ver == local_ver:
+                self.status.emit(f"App up-to-date ({local_ver}) [{self.channel}]")
+                self.updated.emit(False)
+                return
+
             if not self.do_update:
                 if remote_ver and local_ver:
                     if remote_ver == local_ver:
@@ -279,3 +299,23 @@ class AppUpdateWorker(QThread):
         except Exception as e:
             self.status.emit(f"App update failed: {e}")
             self.updated.emit(False)
+
+
+if __name__ == "__main__":
+    # Simulate checking for nightly update
+    worker = AppUpdateWorker(
+        repo="noneeeeeeeeeee/YoutubeConverter",
+        channel="nightly",
+        current_version="Nightly Build 9b42477",
+        do_update=False,
+    )
+    rel = worker._get_release_json()
+    print("Fetched release JSON for nightly:")
+    if rel:
+        remote_ver = rel.get("name") or rel.get("tag_name") or ""
+        local_ver = worker._local_version()
+        print(f"Local version: {local_ver}")
+        print(f"Remote version (nightly): {remote_ver}")
+        print("Update available:", remote_ver != local_ver)
+    else:
+        print("No nightly release found.")

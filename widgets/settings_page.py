@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QLabel,
+    QMessageBox,
 )
 from core.settings import AppSettings
 
@@ -18,6 +19,7 @@ class SettingsPage(QWidget):
     checkYtDlpRequested = pyqtSignal()
     checkAppCheckOnlyRequested = pyqtSignal()
     accentPickRequested = pyqtSignal()
+    resetDefaultsRequested = pyqtSignal()  # NEW
 
     def __init__(self, settings: AppSettings):
         super().__init__()
@@ -131,6 +133,12 @@ class SettingsPage(QWidget):
         lay.addWidget(grp_app)
         lay.addStretch(1)
 
+        # NEW: Reset to defaults button at bottom
+        self.btn_reset_defaults = QPushButton("Reset to Default Settings")
+        self.btn_reset_defaults.setObjectName("DangerButton")
+        self.btn_reset_defaults.clicked.connect(self._confirm_reset_defaults)
+        lay.addWidget(self.btn_reset_defaults, 0, Qt.AlignmentFlag.AlignRight)
+
         # Change handlers
         for w in (
             self.chk_fast_paste,
@@ -145,6 +153,18 @@ class SettingsPage(QWidget):
         self.spn_search_debounce.valueChanged.connect(self.changed.emit)
         self.cmb_ytdlp_branch.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_channel.currentTextChanged.connect(self.changed.emit)
+
+    def _confirm_reset_defaults(self):
+        if (
+            QMessageBox.question(
+                self,
+                "Reset Settings",
+                "Reset all settings to their defaults?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.resetDefaultsRequested.emit()
 
     def apply_to(self, settings: AppSettings):
         settings.ui.fast_paste_enabled = self.chk_fast_paste.isChecked()

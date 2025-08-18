@@ -386,7 +386,7 @@ class Step1LinkWidget(QWidget):
         )
         self.fetcher = InfoFetcher(url)
         self.fetcher.finished_ok.connect(self._info_ok)
-        self.fetcher.finished_fail.connect(self._info_fail)
+        self.fetcher.finished_fail.connect(self._info_fail)  # keep hookup
         self.fetcher.start()
 
     def _info_ok(self, info: Dict):
@@ -460,7 +460,16 @@ class Step1LinkWidget(QWidget):
         else:
             self._upsert_selected(info)
 
-    # NEW: upsert to avoid duplicates and upgrade metadata in-place
+    def _info_fail(self, err: str):
+        self.lbl_status.setText(f"Error: {err}")
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Fetch failed", str(err))
+        except Exception:
+            pass
+        self.fetcher = None
+
     def _upsert_selected(self, info: Dict):
         url = (info or {}).get("webpage_url") or (info or {}).get("url")
         if not url:

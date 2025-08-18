@@ -150,11 +150,9 @@ class AppUpdateWorker(QThread):
         }
         try:
             if self.channel == "nightly":
-                # Try dedicated endpoint for a release by tag
                 url = f"{base}/tags/nightly"
                 r = requests.get(url, headers=headers, timeout=20)
                 if r.status_code == 404:
-                    # Fallback: list releases and pick tag_name == nightly
                     rl = requests.get(base, headers=headers, timeout=20)
                     rl.raise_for_status()
                     releases = rl.json() or []
@@ -206,6 +204,14 @@ class AppUpdateWorker(QThread):
                 with zf.open(m) as src, open(out_path, "wb") as dst:
                     dst.write(src.read())
 
+    def _remote_version_string(self, rel: dict) -> str:
+        """Return the version string used for comparison with local version.txt."""
+        if self.channel == "nightly":
+            # Nightly uses the release title, e.g., "Nightly Build {short_sha}"
+            return (rel.get("name") or "").strip()
+        # Release/Prerelease: prefer tag_name, fallback to name
+        return (rel.get("tag_name") or rel.get("name") or "").strip()
+
     def run(self):
         try:
             self.status.emit("Checking app updates...")
@@ -214,12 +220,7 @@ class AppUpdateWorker(QThread):
                 self.status.emit("No releases found.")
                 self.updated.emit(False)
                 return
-            # Prefer the release title for nightly to match "Nightly Build {sha}"
-            if self.channel == "nightly":
-                tag = rel.get("name") or rel.get("tag_name") or ""
-            else:
-                tag = rel.get("tag_name") or rel.get("name") or ""
-            remote_ver = (tag or "").strip()
+            remote_ver = self._remote_version_string(rel)  # CHANGED
             local_ver = self._local_version()
             if not self.do_update:
                 if remote_ver and local_ver:
@@ -274,6 +275,11 @@ class AppUpdateWorker(QThread):
                     f.write(remote_ver or "")
             except Exception:
                 pass
+            self.status.emit("Update ready. It will be applied on restart.")
+            self.updated.emit(True)
+        except Exception as e:
+            self.status.emit(f"App update failed: {e}")
+            self.updated.emit(False)
             self.status.emit("Update ready. It will be applied on restart.")
             self.updated.emit(True)
         except Exception as e:

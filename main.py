@@ -23,9 +23,13 @@ def _app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-# NEW: central logs directory
+# CHANGED: also import SETTINGS_DIR for user-writable path
+from core.settings import SettingsManager, AppSettings, SETTINGS_DIR
+
+
+# NEW: central logs directory (per-user, writable)
 def _log_dir() -> str:
-    d = os.path.join(_app_dir(), "logs")
+    d = os.path.join(SETTINGS_DIR, "logs")
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
@@ -33,29 +37,36 @@ def _log_dir() -> str:
     return d
 
 
+# NEW: helper to write both timestamped and rolling logs
+def _write_crash_log(exctype, value, tb_text: str):
+    try:
+        from datetime import datetime
+
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        logs = _log_dir()
+        ts_path = os.path.join(logs, f"error-{ts}.log")
+        latest_path = os.path.join(logs, "error.log")
+        for path in (ts_path, latest_path):
+            try:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(
+                        f"[{ts}] {getattr(exctype, '__name__', str(exctype))}: {value}\n"
+                    )
+                    f.write(tb_text + "\n")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 # Global exception handler: write error to file and show dialog instead of hard crash
 def _install_exception_handler():
     def _hook(exctype, value, tb):
         try:
             import traceback
-            from datetime import datetime  # NEW
 
             msg = "".join(traceback.format_exception(exctype, value, tb))
-            # Write to timestamped file and rolling log in logs/ directory (NEW)
-            try:
-                ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                logs = _log_dir()
-                ts_path = os.path.join(logs, f"error-{ts}.log")
-                latest_path = os.path.join(logs, "error.log")
-                for path in (ts_path, latest_path):
-                    try:
-                        with open(path, "a", encoding="utf-8") as f:
-                            f.write(f"[{ts}] {exctype.__name__}: {value}\n")
-                            f.write(msg + "\n")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            _write_crash_log(exctype, value, msg)  # CHANGED
             # Try to show a dialog (create a minimal app if needed)
             try:
                 from PyQt6.QtWidgets import QMessageBox
@@ -70,8 +81,45 @@ def _install_exception_handler():
 
     sys.excepthook = _hook
 
+    # NEW: capture unhandled exceptions in background threads (Python 3.8+)
+    try:
+        import threading
+        import traceback
+
+        def _thread_hook(args):
+            msg = "".join(
+                traceback.format_exception(
+                    args.exc_type, args.exc_value, args.exc_traceback
+                )
+            )
+            _write_crash_log(args.exc_type, args.exc_value, msg)
+
+        threading.excepthook = _thread_hook
+    except Exception:
+        pass
+
+    # NEW: capture unraisable exceptions (e.g., in __del__)
+    try:
+        import traceback
+        import types
+
+        def _unraisable_hook(unraisable):
+            exctype = type(unraisable.exc_value)
+            msg = "".join(
+                traceback.format_exception(
+                    exctype, unraisable.exc_value, unraisable.exc_traceback
+                )
+            )
+            _write_crash_log(exctype, unraisable.exc_value, msg)
+
+        sys.unraisablehook = _unraisable_hook  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 
 _install_exception_handler()
+# NEW: proactively create logs directory in case of early crashes
+_ = _log_dir()
 
 # Ensure Requests can find certificates in frozen builds
 try:
@@ -84,7 +132,6 @@ try:
 except Exception:
     pass
 
-from core.settings import SettingsManager, AppSettings
 from core.ffmpeg_manager import FfmpegInstaller, ensure_ffmpeg_in_path
 from core.update import YtDlpUpdateWorker, AppUpdateWorker  # CHANGED: moved here
 from core.yt_manager import InfoFetcher  # kept

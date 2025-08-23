@@ -119,10 +119,10 @@ class SettingsPage(QWidget):
 
         self.chk_app_auto = QCheckBox()
         self.chk_app_auto.setChecked(settings.app.auto_update)
-        frm_app.addRow("Auto-update app on launch", self.chk_app_auto)  # CHANGED label
+        frm_app.addRow("Auto-update app on launch", self.chk_app_auto)
 
         self.cmb_app_channel = QComboBox()
-        self.cmb_app_channel.addItems(["release", "prerelease", "nightly"])  # NEW
+        self.cmb_app_channel.addItems(["release", "prerelease", "nightly"])
         self.cmb_app_channel.setCurrentText(settings.app.channel)
         frm_app.addRow("Update channel", self.cmb_app_channel)
 

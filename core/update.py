@@ -56,7 +56,7 @@ def current_binary_version() -> str:
     if not os.path.exists(YTDLP_EXE):
         return ""
     try:
-        kwargs = _hidden_subprocess_kwargs()  # CHANGED
+        kwargs = _hidden_subprocess_kwargs()
         out = subprocess.check_output([YTDLP_EXE, "--version"], timeout=10, **kwargs)
         return (out.decode(errors="ignore").strip().split()[0]) if out else ""
     except Exception:
@@ -70,7 +70,7 @@ def ensure_ytdlp_dir():
 def clear_ytdlp_cache():
     try:
         if os.path.exists(YTDLP_EXE):
-            kwargs = _hidden_subprocess_kwargs()  # CHANGED
+            kwargs = _hidden_subprocess_kwargs()
             subprocess.run([YTDLP_EXE, "--rm-cache-dir"], timeout=15, **kwargs)
     except Exception:
         pass
@@ -198,7 +198,6 @@ class AppUpdateWorker(QThread):
                     None,
                 ) or next((x for x in releases if x.get("prerelease")), None)
             else:
-                # Fallback: first entry if channel is unknown
                 return releases[0] if releases else None
         except Exception:
             return None
@@ -251,7 +250,6 @@ class AppUpdateWorker(QThread):
                 self.status.emit("No releases found.")
                 self.updated.emit(False)
                 return
-            # Prefer the release title for nightly to match "Nightly Build {sha}"
             if self.channel == "nightly":
                 tag = rel.get("name") or rel.get("tag_name") or ""
             else:
@@ -292,7 +290,7 @@ class AppUpdateWorker(QThread):
             url = asset.get("browser_download_url")
             name = asset.get("name") or "update.zip"
             self.status.emit(f"Downloading {name}...")
-            os.makedirs(STAGING_DIR, exist_ok=True)  # NEW
+            os.makedirs(STAGING_DIR, exist_ok=True)
             tmp_zip = os.path.join(STAGING_DIR, "_update_tmp.zip")
             with requests.get(url, stream=True, timeout=60) as r:
                 r.raise_for_status()
@@ -303,7 +301,6 @@ class AppUpdateWorker(QThread):
 
             self.status.emit("Preparing update...")
             # Extract into staging (no in-place overwrite while running)
-            # Clean staging before extract
             for root, dirs, files in os.walk(STAGING_DIR):
                 for fn in files:
                     if fn != "_update_tmp.zip":
@@ -316,7 +313,6 @@ class AppUpdateWorker(QThread):
                 os.remove(tmp_zip)
             except Exception:
                 pass
-            # Mark pending update (store normalized version)
             try:
                 with open(os.path.join(STAGING_DIR, ".pending"), "w") as f:
                     f.write(remote_ver or "")

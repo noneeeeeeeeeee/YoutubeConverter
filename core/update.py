@@ -228,6 +228,21 @@ class AppUpdateWorker(QThread):
                 with zf.open(m) as src, open(out_path, "wb") as dst:
                     dst.write(src.read())
 
+    @staticmethod
+    def _normalize_version(v: str) -> str:
+        """
+        Normalize version strings for comparison:
+        - Trim whitespace
+        - Drop leading 'v' (common in tags) when followed by a digit
+        - Lower-case for stability
+        """
+        if not v:
+            return ""
+        s = v.strip()
+        if len(s) >= 2 and (s[0] in ("v", "V")) and s[1].isdigit():
+            s = s[1:]
+        return s.strip().lower()
+
     def run(self):
         try:
             self.status.emit("Checking app updates...")
@@ -241,11 +256,16 @@ class AppUpdateWorker(QThread):
                 tag = rel.get("name") or rel.get("tag_name") or ""
             else:
                 tag = rel.get("tag_name") or rel.get("name") or ""
-            remote_ver = (tag or "").strip()
-            local_ver = self._local_version()
+            raw_remote_ver = (tag or "").strip()
+            raw_local_ver = self._local_version()
+
+            remote_ver = self._normalize_version(raw_remote_ver)
+            local_ver = self._normalize_version(raw_local_ver)
 
             if remote_ver and local_ver and remote_ver == local_ver:
-                self.status.emit(f"App up-to-date ({local_ver}) [{self.channel}]")
+                self.status.emit(
+                    f"App up-to-date ({raw_local_ver or local_ver}) [{self.channel}]"
+                )
                 self.updated.emit(False)
                 return
 
@@ -253,11 +273,11 @@ class AppUpdateWorker(QThread):
                 if remote_ver and local_ver:
                     if remote_ver == local_ver:
                         self.status.emit(
-                            f"App up-to-date ({local_ver}) [{self.channel}]"
+                            f"App up-to-date ({raw_local_ver or local_ver}) [{self.channel}]"
                         )
                     else:
                         self.status.emit(
-                            f"Update available {local_ver} -> {remote_ver} [{self.channel}]"
+                            f"Update available {raw_local_ver or local_ver} -> {raw_remote_ver or remote_ver} [{self.channel}]"
                         )
                 else:
                     self.status.emit(f"Update check complete [{self.channel}]")
@@ -296,7 +316,7 @@ class AppUpdateWorker(QThread):
                 os.remove(tmp_zip)
             except Exception:
                 pass
-            # Mark pending update
+            # Mark pending update (store normalized version)
             try:
                 with open(os.path.join(STAGING_DIR, ".pending"), "w") as f:
                     f.write(remote_ver or "")
@@ -326,5 +346,4 @@ if __name__ == "__main__":
         print(f"Remote version (nightly): {remote_ver}")
         print("Update available:", remote_ver != local_ver)
     else:
-        print("No nightly release found.")
         print("No nightly release found.")

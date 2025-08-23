@@ -23,19 +23,37 @@ def _app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+# NEW: central logs directory
+def _log_dir() -> str:
+    d = os.path.join(_app_dir(), "logs")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
 # Global exception handler: write error to file and show dialog instead of hard crash
 def _install_exception_handler():
     def _hook(exctype, value, tb):
         try:
             import traceback
+            from datetime import datetime  # NEW
 
             msg = "".join(traceback.format_exception(exctype, value, tb))
-            # Write to error.log in app directory
+            # Write to timestamped file and rolling log in logs/ directory (NEW)
             try:
-                with open(
-                    os.path.join(_app_dir(), "error.log"), "a", encoding="utf-8"
-                ) as f:
-                    f.write(msg + "\n")
+                ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                logs = _log_dir()
+                ts_path = os.path.join(logs, f"error-{ts}.log")
+                latest_path = os.path.join(logs, "error.log")
+                for path in (ts_path, latest_path):
+                    try:
+                        with open(path, "a", encoding="utf-8") as f:
+                            f.write(f"[{ts}] {exctype.__name__}: {value}\n")
+                            f.write(msg + "\n")
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # Try to show a dialog (create a minimal app if needed)
@@ -138,9 +156,11 @@ class MainWindow(QMainWindow):
         if self.settings.ytdlp.auto_update:
             self._check_ytdlp_updates()
 
-        # App auto update on launch
+        # App auto update on launch or check-and-prompt (mutually exclusive)
         if self.settings.app.auto_update:
-            self._check_app_updates(check_only=False)
+            self._check_app_updates(check_only=False, prompt_on_available=False)
+        elif getattr(self.settings.app, "check_on_launch", False):
+            self._check_app_updates(check_only=True, prompt_on_available=True)
 
         # Initialize steps display
         self._refresh_stepper_titles()
@@ -235,8 +255,9 @@ class MainWindow(QMainWindow):
         self.settings_page.changed.connect(self._settings_changed)  # NEW
         self.settings_page.accentPickRequested.connect(self._pick_accent)  # NEW
         self.settings_page.checkYtDlpRequested.connect(self._check_ytdlp_updates)  # NEW
+        # CHANGED: when user clicks "Check app update", check-only but prompt on availability
         self.settings_page.checkAppCheckOnlyRequested.connect(
-            lambda: self._check_app_updates(check_only=True)
+            lambda: self._check_app_updates(check_only=True, prompt_on_available=True)
         )
 
     def _refresh_stepper_titles(self):
@@ -353,12 +374,66 @@ class MainWindow(QMainWindow):
         self.yt_thread.finished.connect(lambda: None)
         self.yt_thread.start()
 
-    def _check_app_updates(self, check_only: bool = False):
+    def _show_update_prompt(self, remote_ver: str, local_ver: str) -> bool:
+        from PyQt6.QtWidgets import QMessageBox
+
+        accent = self.settings.ui.accent_color_hex or "#F28C28"
+        box = QMessageBox(self)
+        box.setWindowTitle("New Update Found!")
+        box.setText(f"Version {local_ver} \u2192 {remote_ver}\n\nUpdate now?")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        # Semi-transparent with bold accent border (best-effort styling)
+        box.setStyleSheet(
+            f"""
+            QMessageBox {{
+                background-color: rgba(25,25,28,210);
+                border: 2px solid {accent};
+                border-radius: 12px;
+                color: #ffffff;
+            }}
+            QMessageBox QLabel {{
+                color: #ffffff;
+                font-weight: 600;
+                font-size: 14px;
+            }}
+            QMessageBox QPushButton {{
+                background: transparent;
+                border: 1px solid {accent};
+                color: #ffffff;
+                padding: 6px 12px;
+                border-radius: 6px;
+            }}
+            QMessageBox QPushButton:hover {{
+                background: {accent}33;
+            }}
+            """
+        )
+        try:
+            box.setWindowOpacity(0.96)
+        except Exception:
+            pass
+        return box.exec() == QMessageBox.StandardButton.Yes
+
+    def _check_app_updates(
+        self, check_only: bool = False, prompt_on_available: bool = False
+    ):
         do_update = not check_only and self.settings.app.auto_update
         channel = self.settings.app.channel
         self.toast.show("Checking app updates...")
         self.app_up_thread = AppUpdateWorker(APP_REPO, channel, APP_VERSION, do_update)
         self.app_up_thread.status.connect(lambda s: self.toast.show(s))
+
+        # When only checking, optionally prompt on availability
+        if prompt_on_available:
+
+            def _on_available(remote: str, local: str):
+                if self._show_update_prompt(remote, local):
+                    # Run full update without prompting again
+                    self._check_app_updates(check_only=False, prompt_on_available=False)
+
+            self.app_up_thread.available.connect(_on_available)
 
         def _after(updated: bool):
             if updated:

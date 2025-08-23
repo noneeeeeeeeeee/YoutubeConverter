@@ -119,12 +119,21 @@ class SettingsPage(QWidget):
 
         self.chk_app_auto = QCheckBox()
         self.chk_app_auto.setChecked(settings.app.auto_update)
-        frm_app.addRow("Auto-update app", self.chk_app_auto)
+        frm_app.addRow("Auto-update app on launch", self.chk_app_auto)  # CHANGED label
 
         self.cmb_app_channel = QComboBox()
         self.cmb_app_channel.addItems(["release", "prerelease", "nightly"])  # NEW
         self.cmb_app_channel.setCurrentText(settings.app.channel)
         frm_app.addRow("Update channel", self.cmb_app_channel)
+
+        # NEW: Check updates on launch (prompt)
+        self.chk_app_check_prompt = QCheckBox()
+        self.chk_app_check_prompt.setChecked(
+            getattr(settings.app, "check_on_launch", False)
+        )
+        frm_app.addRow(
+            "Check for updates on launch (prompt)", self.chk_app_check_prompt
+        )
 
         self.btn_app_check = QPushButton("Check app update")
         self.btn_app_check.clicked.connect(self.checkAppCheckOnlyRequested.emit)
@@ -148,11 +157,16 @@ class SettingsPage(QWidget):
             self.chk_live_search,
             self.chk_ytdlp_auto,
             self.chk_app_auto,
+            self.chk_app_check_prompt,  # NEW
         ):
             w.toggled.connect(self.changed.emit)
         self.spn_search_debounce.valueChanged.connect(self.changed.emit)
         self.cmb_ytdlp_branch.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_channel.currentTextChanged.connect(self.changed.emit)
+
+        # NEW: enforce mutual exclusivity between auto-update and check-on-launch
+        self.chk_app_auto.toggled.connect(self._on_auto_update_toggled)
+        self.chk_app_check_prompt.toggled.connect(self._on_check_prompt_toggled)
 
     def _confirm_reset_defaults(self):
         if (
@@ -166,6 +180,22 @@ class SettingsPage(QWidget):
         ):
             self.resetDefaultsRequested.emit()
 
+    # NEW
+    def _on_auto_update_toggled(self, checked: bool):
+        if checked:
+            self.chk_app_check_prompt.blockSignals(True)
+            self.chk_app_check_prompt.setChecked(False)
+            self.chk_app_check_prompt.blockSignals(False)
+        self.changed.emit()
+
+    # NEW
+    def _on_check_prompt_toggled(self, checked: bool):
+        if checked:
+            self.chk_app_auto.blockSignals(True)
+            self.chk_app_auto.setChecked(False)
+            self.chk_app_auto.blockSignals(False)
+        self.changed.emit()
+
     def apply_to(self, settings: AppSettings):
         settings.ui.fast_paste_enabled = self.chk_fast_paste.isChecked()
         settings.ui.background_metadata_enabled = self.chk_bg_meta.isChecked()
@@ -177,3 +207,4 @@ class SettingsPage(QWidget):
         settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
         settings.app.auto_update = self.chk_app_auto.isChecked()
         settings.app.channel = self.cmb_app_channel.currentText()
+        settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()  # NEW

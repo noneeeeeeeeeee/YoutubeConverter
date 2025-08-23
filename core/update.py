@@ -137,6 +137,7 @@ class YtDlpUpdateWorker(QThread):
 class AppUpdateWorker(QThread):
     status = pyqtSignal(str)
     updated = pyqtSignal(bool)
+    available = pyqtSignal(str, str)  # NEW: remote_ver, local_ver
 
     def __init__(self, repo: str, channel: str, current_version: str, do_update: bool):
         super().__init__()
@@ -250,6 +251,7 @@ class AppUpdateWorker(QThread):
                 self.status.emit("No releases found.")
                 self.updated.emit(False)
                 return
+            # Prefer the release title for nightly to match "Nightly Build {sha}"
             if self.channel == "nightly":
                 tag = rel.get("name") or rel.get("tag_name") or ""
             else:
@@ -268,15 +270,13 @@ class AppUpdateWorker(QThread):
                 return
 
             if not self.do_update:
-                if remote_ver and local_ver:
-                    if remote_ver == local_ver:
-                        self.status.emit(
-                            f"App up-to-date ({raw_local_ver or local_ver}) [{self.channel}]"
-                        )
-                    else:
-                        self.status.emit(
-                            f"Update available {raw_local_ver or local_ver} -> {raw_remote_ver or remote_ver} [{self.channel}]"
-                        )
+                if remote_ver and local_ver and remote_ver != local_ver:
+                    self.status.emit(
+                        f"Update available {raw_local_ver or local_ver} -> {raw_remote_ver or remote_ver} [{self.channel}]"
+                    )
+                    self.available.emit(
+                        raw_remote_ver or remote_ver, raw_local_ver or local_ver
+                    )  # NEW
                 else:
                     self.status.emit(f"Update check complete [{self.channel}]")
                 self.updated.emit(False)
@@ -343,3 +343,8 @@ if __name__ == "__main__":
         print("Update available:", remote_ver != local_ver)
     else:
         print("No nightly release found.")
+        local_ver = worker._local_version()
+        remote_ver = ""
+        print(f"Local version: {local_ver}")
+        print(f"Remote version (nightly): {remote_ver}")
+        print("Update available:", False)

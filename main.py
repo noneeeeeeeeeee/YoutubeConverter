@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QPushButton,
     QFrame,
-    QScrollArea,  # added
+    QScrollArea,
 )
 
 
@@ -27,18 +27,25 @@ def _app_dir() -> str:
 from core.settings import SettingsManager, AppSettings, SETTINGS_DIR
 
 
-# NEW: central logs directory (per-user, writable)
+# NEW: central logs directory (per-user, writable) with fallback to app dir
 def _log_dir() -> str:
-    d = os.path.join(SETTINGS_DIR, "logs")
+    primary = os.path.join(SETTINGS_DIR, "logs")
     try:
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(primary, exist_ok=True)
+        return primary
     except Exception:
         pass
-    return d
+    fallback = os.path.join(_app_dir(), "logs")
+    try:
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+    except Exception:
+        pass
+    return _app_dir()  # last resort
 
 
-# NEW: helper to write both timestamped and rolling logs
-def _write_crash_log(exctype, value, tb_text: str):
+# NEW: helper to write both timestamped and rolling logs, returns the timestamped path
+def _write_crash_log(exctype, value, tb_text: str) -> str | None:
     try:
         from datetime import datetime
 
@@ -46,17 +53,17 @@ def _write_crash_log(exctype, value, tb_text: str):
         logs = _log_dir()
         ts_path = os.path.join(logs, f"error-{ts}.log")
         latest_path = os.path.join(logs, "error.log")
+        line1 = f"[{ts}] {getattr(exctype, '__name__', str(exctype))}: {value}\n"
         for path in (ts_path, latest_path):
             try:
                 with open(path, "a", encoding="utf-8") as f:
-                    f.write(
-                        f"[{ts}] {getattr(exctype, '__name__', str(exctype))}: {value}\n"
-                    )
-                    f.write(tb_text + "\n")
+                    f.write(line1)
+                    f.write(tb_text.rstrip() + "\n")
             except Exception:
                 pass
+        return ts_path
     except Exception:
-        pass
+        return None
 
 
 # Global exception handler: write error to file and show dialog instead of hard crash
@@ -66,13 +73,24 @@ def _install_exception_handler():
             import traceback
 
             msg = "".join(traceback.format_exception(exctype, value, tb))
-            _write_crash_log(exctype, value, msg)  # CHANGED
+            log_path = _write_crash_log(exctype, value, msg)  # CHANGED
             # Try to show a dialog (create a minimal app if needed)
             try:
                 from PyQt6.QtWidgets import QMessageBox
 
                 app = QApplication.instance() or QApplication(sys.argv)
-                QMessageBox.critical(None, "Unexpected Error", msg[:8000])  # cap length
+                box = QMessageBox()
+                box.setIcon(QMessageBox.Icon.Critical)
+                box.setWindowTitle("Unexpected Error")
+                # Short summary in the main text
+                summary = f"{getattr(exctype, '__name__', str(exctype))}: {value}"
+                if log_path:
+                    box.setText(f"{summary}\n\nA log was saved to:\n{log_path}")
+                else:
+                    box.setText(summary)
+                # Full stack trace in expandable details
+                box.setDetailedText(msg)
+                box.exec()
             except Exception:
                 pass
         finally:
@@ -83,8 +101,7 @@ def _install_exception_handler():
 
     # NEW: capture unhandled exceptions in background threads (Python 3.8+)
     try:
-        import threading
-        import traceback
+        import threading, traceback
 
         def _thread_hook(args):
             msg = "".join(
@@ -101,7 +118,6 @@ def _install_exception_handler():
     # NEW: capture unraisable exceptions (e.g., in __del__)
     try:
         import traceback
-        import types
 
         def _unraisable_hook(unraisable):
             exctype = type(unraisable.exc_value)
@@ -112,16 +128,48 @@ def _install_exception_handler():
             )
             _write_crash_log(exctype, unraisable.exc_value, msg)
 
-        sys.unraisablehook = _unraisable_hook  # type: ignore[attr-defined]
+        sys.unraisablehook = _unraisable_hook
     except Exception:
         pass
 
+    try:
+        from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+
+        def _qt_msg_handler(msg_type, context, message):
+            level = {
+                QtMsgType.QtDebugMsg: "QtDebug",
+                QtMsgType.QtInfoMsg: "QtInfo",
+                QtMsgType.QtWarningMsg: "QtWarning",
+                QtMsgType.QtCriticalMsg: "QtCritical",
+                QtMsgType.QtFatalMsg: "QtFatal",
+            }.get(msg_type, "QtLog")
+            # Include basic context if available
+            try:
+                ctx = f"{getattr(context, 'file', '?')}:{getattr(context, 'line', 0)} ({getattr(context, 'function', '')})"
+            except Exception:
+                ctx = ""
+            text = f"{level}: {message}\n{ctx}".strip()
+            _write_crash_log("QtMessage", level, text)
+            if msg_type == QtMsgType.QtFatalMsg:
+                try:
+                    from PyQt6.QtWidgets import QMessageBox
+
+                    box = QMessageBox()
+                    box.setIcon(QMessageBox.Icon.Critical)
+                    box.setWindowTitle("Fatal Qt Error")
+                    box.setText(text)
+                    box.exec()
+                except Exception:
+                    pass
+
+        qInstallMessageHandler(_qt_msg_handler)
+    except Exception as e:
+        _write_crash_log("QtMsgInstallError", e, "Failed to install Qt message handler")
+
 
 _install_exception_handler()
-# NEW: proactively create logs directory in case of early crashes
 _ = _log_dir()
 
-# Ensure Requests can find certificates in frozen builds
 try:
     import certifi
 

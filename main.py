@@ -431,6 +431,8 @@ class MainWindow(QMainWindow):
         box.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
+        box.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        box.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         # Semi-transparent with bold accent border (best-effort styling)
         box.setStyleSheet(
             f"""
@@ -464,9 +466,15 @@ class MainWindow(QMainWindow):
         return box.exec() == QMessageBox.StandardButton.Yes
 
     def _check_app_updates(
-        self, check_only: bool = False, prompt_on_available: bool = False
+        self,
+        check_only: bool = False,
+        prompt_on_available: bool = False,
+        force_update: bool = False,  # NEW
     ):
-        do_update = not check_only and self.settings.app.auto_update
+        # Allow forcing an update even if auto_update is disabled (e.g., user clicked Yes)
+        do_update = (not check_only) and (
+            self.settings.app.auto_update or force_update
+        )  # CHANGED
         channel = self.settings.app.channel
         self.toast.show("Checking app updates...")
         self.app_up_thread = AppUpdateWorker(APP_REPO, channel, APP_VERSION, do_update)
@@ -477,8 +485,12 @@ class MainWindow(QMainWindow):
 
             def _on_available(remote: str, local: str):
                 if self._show_update_prompt(remote, local):
-                    # Run full update without prompting again
-                    self._check_app_updates(check_only=False, prompt_on_available=False)
+                    # Run full update regardless of auto_update setting
+                    self._check_app_updates(
+                        check_only=False,
+                        prompt_on_available=False,
+                        force_update=True,  # CHANGED
+                    )
 
             self.app_up_thread.available.connect(_on_available)
 

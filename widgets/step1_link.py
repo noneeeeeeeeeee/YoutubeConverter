@@ -411,9 +411,15 @@ class Step1LinkWidget(QWidget):
         self.fetcher = None
         self._set_busy(False)
 
-        # Clear input if requested
-        if self.settings.ui.clear_input_after_fetch:
-            self.txt.clear()
+        # Clear input if requested (NEW: search-specific setting with legacy fallback)
+        try:
+            flag = getattr(self.settings.ui, "auto_clear_on_success", None)
+            if flag is None:
+                flag = bool(getattr(self.settings.ui, "clear_input_after_fetch", False))
+            if flag:
+                self.txt.clear()
+        except Exception:
+            pass
         self.lbl_status.setText("")
 
         # Handle search results
@@ -937,53 +943,15 @@ class Step1LinkWidget(QWidget):
             self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
         finally:
             self.playlist_list.setUpdatesEnabled(True)
+            self._thumb_threads.clear()
 
-    # NEW: handler for the "Select all" checkbox in the playlist tab
-    def _on_pl_select_all_toggled(self, checked: bool):
-        # Select/deselect all playlist entries, updating self.selected accordingly.
-        self.playlist_list.setUpdatesEnabled(False)
-        try:
-            if checked:
-                for i in range(self.playlist_list.count()):
-                    it = self.playlist_list.item(i)
-                    e = it.data(Qt.ItemDataRole.UserRole) or {}
-                    u = e.get("webpage_url") or e.get("url")
-                    if not u:
-                        continue
-                    idx = next(
-                        (
-                            k
-                            for k, s in enumerate(self.selected)
-                            if (s.get("webpage_url") or s.get("url")) == u
-                        ),
-                        -1,
-                    )
-                    if idx >= 0:
-                        self.selected[idx] = {**self.selected[idx], **e}
-                    else:
-                        self.selected.append(e)
-                    self._style_playlist_item(it, True)
-            else:
-                # Remove any selected item that belongs to this playlist view
-                urls = []
-                for i in range(self.playlist_list.count()):
-                    it = self.playlist_list.item(i)
-                    e = it.data(Qt.ItemDataRole.UserRole) or {}
-                    u = e.get("webpage_url") or e.get("url")
-                    if not u:
-                        continue
-                    urls.append(u)
-                    self._style_playlist_item(it, False)
-                urlset = set(urls)
-                self.selected = [
-                    s
-                    for s in self.selected
-                    if (s.get("webpage_url") or s.get("url")) not in urlset
-                ]
-            self._refresh_selected_list()
-            self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
-        finally:
-            self.playlist_list.setUpdatesEnabled(True)
+    # "Next" in multi-select mode: emit all selected infos
+    def _confirm_selection(self):
+        if not self.selected:
+            QMessageBox.information(self, "No videos", "No videos selected.")
+            return
+        # Ensure all selected have metadata before emitting
+        self._fetch_all_selected_then_emit()
 
     # Show Next only when multi is enabled; confirm clear when disabling
     def _on_multi_toggled(self, checked: bool):

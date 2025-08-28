@@ -74,6 +74,19 @@ class SettingsPage(QWidget):
         )
         frm_search.addRow("Search debounce (s)", self.spn_search_debounce)
 
+        # NEW: Auto clear input on successful fetch/search
+        self.chk_auto_clear_success = QCheckBox()
+        self.chk_auto_clear_success.setChecked(
+            bool(
+                getattr(
+                    settings.ui,
+                    "auto_clear_on_success",
+                    getattr(settings.ui, "clear_input_after_fetch", False),
+                )
+            )
+        )
+        frm_search.addRow("Auto clear input on success", self.chk_auto_clear_success)
+
         lay.addWidget(grp_search)
 
         # yt-dlp
@@ -159,12 +172,17 @@ class SettingsPage(QWidget):
             self.chk_clear_after_fetch,
             self.chk_auto_search_text,
             self.chk_ytdlp_auto,
+            self.chk_auto_clear_success,  # NEW
         ):
             w.toggled.connect(self.changed.emit)
         self.spn_search_debounce.valueChanged.connect(self.changed.emit)
         self.cmb_ytdlp_branch.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_channel.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_behavior.currentIndexChanged.connect(self.changed.emit)
+
+        # REMOVED: obsolete connections to non-existent checkboxes
+        # self.chk_app_auto.toggled.connect(...)
+        # self.chk_app_check_prompt.toggled.connect(...)
 
     def _confirm_reset_defaults(self):
         if (
@@ -183,6 +201,9 @@ class SettingsPage(QWidget):
         settings.ui.clear_input_after_fetch = self.chk_clear_after_fetch.isChecked()
         settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
         settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
+        settings.ui.auto_clear_on_success = (
+            self.chk_auto_clear_success.isChecked()
+        )  # NEW
 
         # yt-dlp
         settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
@@ -193,20 +214,6 @@ class SettingsPage(QWidget):
         settings.app.auto_update = behavior == 2
         settings.app.check_on_launch = behavior == 1
         settings.app.channel = self.cmb_app_channel.currentText()
-        self.chk_app_auto.setChecked(False)
-        self.chk_app_auto.blockSignals(False)
-        self.changed.emit()
-
-    def apply_to(self, settings: AppSettings):
-        # CHANGED: clean and safe assignments only to existing controls
-        settings.ui.clear_input_after_fetch = self.chk_clear_after_fetch.isChecked()
-        settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
-        settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
-
-        settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
-        settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
-
-        # Map behavior combo to flags
         behavior = self.cmb_app_behavior.currentIndex()
         settings.app.auto_update = behavior == 2
         settings.app.check_on_launch = behavior == 1

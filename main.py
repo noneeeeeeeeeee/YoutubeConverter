@@ -237,6 +237,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 640)
         self.settings_mgr = SettingsManager()
         self.settings: AppSettings = self.settings_mgr.load()
+        # NEW: migrate settings to latest shape
+        self._migrate_settings()
 
         self.style_mgr = StyleManager(self.settings.ui.accent_color_hex)
         self.setStyleSheet(self.style_mgr.qss())
@@ -409,10 +411,10 @@ class MainWindow(QMainWindow):
                     "quality": "best",
                 }
                 self.step4.configure(selection, self.settings)
-                self.toast.show("Added to downloads.")
+                self._toast("Added to downloads.")
 
             def _fail(err):
-                self.toast.show(f"Failed to fetch info: {err}")
+                self._toast(f"Failed to fetch info: {err}")
 
             self._bg_fetcher.finished_ok.connect(_ok)
             self._bg_fetcher.finished_fail.connect(_fail)
@@ -421,7 +423,7 @@ class MainWindow(QMainWindow):
 
         url = payload.get("url") or info.get("webpage_url") or info.get("url")
         if url and not info.get("formats"):
-            self.toast.show("Fetching video info...")
+            self._toast("Fetching video info...")
             self._bg_fetcher = InfoFetcher(url)
 
             def _ok(meta):
@@ -468,6 +470,7 @@ class MainWindow(QMainWindow):
             pass
         self.flow_stack.setCurrentIndex(0)
         self.stepper.set_current(0)
+        self._toast("Downloads finished.")  # OPTIONAL: cleaner end notice
 
     def _pick_accent(self):
         from PyQt6.QtWidgets import QColorDialog
@@ -477,7 +480,7 @@ class MainWindow(QMainWindow):
             self.settings.ui.accent_color_hex = c.name()
             self.setStyleSheet(self.style_mgr.with_accent(c.name()))
             self._settings_changed()
-            self.toast.show(f"Accent changed to {c.name()}")
+            self._toast(f"Accent changed to {c.name()}")  # CHANGED
 
     def _settings_changed(self):
         # Persist changes immediately using SettingsPage
@@ -488,21 +491,23 @@ class MainWindow(QMainWindow):
         ok = ensure_ffmpeg_in_path()
         if ok:
             return
-        self.toast.show("FFmpeg not found. Downloading...")
+        self._toast("FFmpeg not found. Downloading...")  # CHANGED
         self.ff_thread = FfmpegInstaller(self)
         self.ff_thread.progress.connect(
-            lambda p: self.toast.show(f"Downloading FFmpeg... {p}%")
-        )
-        self.ff_thread.finished_ok.connect(lambda path: self.toast.show("FFmpeg ready"))
+            lambda p: self._toast(f"Downloading FFmpeg... {p}%")
+        )  # CHANGED
+        self.ff_thread.finished_ok.connect(
+            lambda path: self._toast("FFmpeg ready")
+        )  # CHANGED
         self.ff_thread.finished_fail.connect(
-            lambda e: self.toast.show(f"FFmpeg install failed: {e}")
-        )
+            lambda e: self._toast(f"FFmpeg install failed: {e}")
+        )  # CHANGED
         self.ff_thread.start()
 
     def _check_ytdlp_updates(self):
-        self.toast.show("Checking for yt-dlp updates...")
+        self._toast("Checking for yt-dlp updates...")  # CHANGED
         self.yt_thread = YtDlpUpdateWorker(self.settings.ytdlp.branch, check_only=True)
-        self.yt_thread.status.connect(lambda s: self.toast.show(s))
+        self.yt_thread.status.connect(self._toast)  # CHANGED
         if self.settings.ytdlp.auto_update:
             # perform update
             self.yt_thread.check_only = False
@@ -562,9 +567,9 @@ class MainWindow(QMainWindow):
     ):
         do_update = (not check_only) and (self.settings.app.auto_update or force_update)
         channel = self.settings.app.channel
-        self.toast.show("Checking app updates...")
+        self._toast("Checking app updates...")  # CHANGED
         self.app_up_thread = AppUpdateWorker(APP_REPO, channel, APP_VERSION, do_update)
-        self.app_up_thread.status.connect(lambda s: self.toast.show(s))
+        self.app_up_thread.status.connect(self._toast)  # CHANGED
 
         if prompt_on_available:
 
@@ -641,6 +646,35 @@ class MainWindow(QMainWindow):
         self.flow_stack.setCurrentIndex(2)
         is_playlist = len(self.stepper._labels) == 4
         self.stepper.set_current(2 if is_playlist else 1)
+
+    # NEW: only show toasts when window is active (avoid always-on-top feel)
+    def _toast(self, msg: str):
+        try:
+            if self.isMinimized() or not self.isActiveWindow():
+                return
+            self.toast.show(msg)
+        except Exception:
+            pass
+
+    # NEW: migrate old settings to new schema safely
+    def _migrate_settings(self):
+        try:
+            ui = self.settings.ui
+            app = self.settings.app
+            # Introduce auto_clear_on_success; default to legacy clear_input_after_fetch
+            if not hasattr(ui, "auto_clear_on_success"):
+                setattr(
+                    ui,
+                    "auto_clear_on_success",
+                    bool(getattr(ui, "clear_input_after_fetch", False)),
+                )
+            # Ensure check_on_launch exists
+            if not hasattr(app, "check_on_launch"):
+                setattr(app, "check_on_launch", False)
+            # Persist any additions
+            self.settings_mgr.save(self.settings)
+        except Exception:
+            pass
 
 
 def main():

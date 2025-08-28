@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QMessageBox,
     QCheckBox,
+    QProgressBar,
 )
 from PyQt6.QtGui import QIcon, QPixmap, QColor, QImage
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
@@ -24,6 +25,35 @@ from core.yt_manager import InfoFetcher
 YOUTUBE_URL_RE = re.compile(r"https?://[^\s]+")
 VIDEO_HOSTS = ("www.youtube.com", "m.youtube.com", "youtube.com", "youtu.be")
 ICON_PIXMAP_ROLE = int(Qt.ItemDataRole.UserRole) + 1  # store original pixmap
+
+
+# Simple busy indicator using PyQt6 QProgressBar
+class SimpleSpinner(QProgressBar):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRange(0, 0)  # Indeterminate mode
+        self.setFixedWidth(30)
+        self.setFixedHeight(20)
+        self.setTextVisible(False)
+        self.setStyleSheet(
+            """
+            QProgressBar {
+                background-color: white;
+                border: 1px solid #CCCCCC;
+                border-radius: 5px;
+            }
+            QProgressBar::chunk {
+                background-color: #007BFF;
+            }
+        """
+        )
+        self.setVisible(False)
+
+    def start(self):
+        self.setVisible(True)
+
+    def stop(self):
+        self.setVisible(False)
 
 
 class Step1LinkWidget(QWidget):
@@ -87,7 +117,7 @@ class Step1LinkWidget(QWidget):
         self.chk_multi.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_paste = QPushButton("Paste")
         top.addWidget(self.txt, 1)
-        top.addWidget(self.chk_multi)  # moved before Paste
+        top.addWidget(self.chk_multi)
         top.addWidget(self.btn_paste)
         lay.addLayout(top)
 
@@ -98,25 +128,11 @@ class Step1LinkWidget(QWidget):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
 
-        # Spinner setup with fallback handling
-        self.spinner = None
-        try:
-            try:
-                from pyqtspinner.spinner import WaitingSpinner as QtWaitingSpinner
-            except Exception:
-                from pyqtspinner import QtWaitingSpinner
-            self.spinner = QtWaitingSpinner(self, True, True, Qt.ApplicationModal)
-            try:
-                self.spinner.setColor(QColor(self.settings.ui.accent_color_hex))
-            except Exception:
-                pass
-            self.spinner.setVisible(False)
-        except Exception:
-            pass
+        # Use our simple spinner instead of pyqtspinner
+        self.spinner = SimpleSpinner(self)
 
         status_row.addWidget(self.lbl_status, 1)
-        if self.spinner:
-            status_row.addWidget(self.spinner, 0)
+        status_row.addWidget(self.spinner, 0)
         lay.addLayout(status_row)
 
         # Tabs
@@ -185,7 +201,6 @@ class Step1LinkWidget(QWidget):
 
     def _set_busy(self, on: bool):
         if self.spinner:
-            self.spinner.setVisible(on)
             if on:
                 self.spinner.start()
             else:
@@ -698,6 +713,16 @@ class Step1LinkWidget(QWidget):
                     u = e.get("webpage_url") or e.get("url")
                     if not u:
                         continue
+                    urls.append(u)
+                    self._style_playlist_item(it, False)
+                urlset = set(urls)
+                self.selected = [
+                    s
+                    for s in self.selected
+                    if (s.get("webpage_url") or s.get("url")) not in urlset
+                ]
+            self._refresh_selected_list()
+            self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
         finally:
             self.playlist_list.setUpdatesEnabled(True)
 

@@ -521,19 +521,27 @@ class MainWindow(QMainWindow):
         )
         box.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         box.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        # Semi-transparent with bold accent border (best-effort styling)
+        # Enhanced styling: white outer border + accent inner border
         box.setStyleSheet(
             f"""
             QMessageBox {{
                 background-color: rgba(25,25,28,210);
-                border: 2px solid {accent};
-                border-radius: 12px;
+                border: 4px solid white;
+                border-radius: 14px;
                 color: #ffffff;
+                padding: 4px;
             }}
             QMessageBox QLabel {{
                 color: #ffffff;
                 font-weight: 600;
                 font-size: 14px;
+            }}
+            /* Inner container to create double border effect */
+            QMessageBox > QDialogButtonBox,
+            QMessageBox > QLabel {{
+                border: 2px solid {accent};
+                border-radius: 8px;
+                padding: 8px;
             }}
             QMessageBox QPushButton {{
                 background: transparent;
@@ -543,12 +551,14 @@ class MainWindow(QMainWindow):
                 border-radius: 6px;
             }}
             QMessageBox QPushButton:hover {{
-                background: {accent}33;
+                background: white;
+                color: {accent};
+                font-weight: bold;
             }}
             """
         )
         try:
-            box.setWindowOpacity(0.96)
+            box.setWindowOpacity(0.98)
         except Exception:
             pass
         return box.exec() == QMessageBox.StandardButton.Yes
@@ -557,18 +567,14 @@ class MainWindow(QMainWindow):
         self,
         check_only: bool = False,
         prompt_on_available: bool = False,
-        force_update: bool = False,  # NEW
+        force_update: bool = False,
     ):
-        # Allow forcing an update even if auto_update is disabled (e.g., user clicked Yes)
-        do_update = (not check_only) and (
-            self.settings.app.auto_update or force_update
-        )  # CHANGED
+        do_update = (not check_only) and (self.settings.app.auto_update or force_update)
         channel = self.settings.app.channel
         self.toast.show("Checking app updates...")
         self.app_up_thread = AppUpdateWorker(APP_REPO, channel, APP_VERSION, do_update)
         self.app_up_thread.status.connect(lambda s: self.toast.show(s))
 
-        # When only checking, optionally prompt on availability
         if prompt_on_available:
 
             def _on_available(remote: str, local: str):

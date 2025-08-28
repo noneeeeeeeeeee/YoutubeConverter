@@ -25,7 +25,7 @@ class SettingsPage(QWidget):
         super().__init__()
         self._settings = settings
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 16, 4, 16)  # CHANGED: slightly reduced left margin
+        lay.setContentsMargins(12, 16, 4, 16)
 
         # Note
         grp_note = QGroupBox("Note")
@@ -172,17 +172,13 @@ class SettingsPage(QWidget):
             self.chk_clear_after_fetch,
             self.chk_auto_search_text,
             self.chk_ytdlp_auto,
-            self.chk_auto_clear_success,  # NEW
+            self.chk_auto_clear_success,
         ):
             w.toggled.connect(self.changed.emit)
         self.spn_search_debounce.valueChanged.connect(self.changed.emit)
         self.cmb_ytdlp_branch.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_channel.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_behavior.currentIndexChanged.connect(self.changed.emit)
-
-        # REMOVED: obsolete connections to non-existent checkboxes
-        # self.chk_app_auto.toggled.connect(...)
-        # self.chk_app_check_prompt.toggled.connect(...)
 
     def _confirm_reset_defaults(self):
         if (
@@ -214,8 +210,9 @@ class SettingsPage(QWidget):
         settings.app.auto_update = behavior == 2
         settings.app.check_on_launch = behavior == 1
         settings.app.channel = self.cmb_app_channel.currentText()
+        settings.app.check_on_launch = behavior == 1
+        settings.app.channel = self.cmb_app_channel.currentText()
         behavior = self.cmb_app_behavior.currentIndex()
         settings.app.auto_update = behavior == 2
         settings.app.check_on_launch = behavior == 1
         settings.app.channel = self.cmb_app_channel.currentText()
-        settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()

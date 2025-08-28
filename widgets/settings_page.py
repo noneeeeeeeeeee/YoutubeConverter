@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QEvent
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -25,7 +25,7 @@ class SettingsPage(QWidget):
         super().__init__()
         self._settings = settings
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 16, 4, 16)
+        lay.setContentsMargins(12, 16, 4, 16)  # CHANGED: slightly reduced left margin
 
         # Note
         grp_note = QGroupBox("Note")
@@ -67,10 +67,6 @@ class SettingsPage(QWidget):
         self.chk_auto_search_text.setChecked(settings.ui.auto_search_text)
         frm_search.addRow("Auto search text", self.chk_auto_search_text)
 
-        self.chk_live_search = QCheckBox()
-        self.chk_live_search.setChecked(getattr(settings.ui, "live_search", True))
-        frm_search.addRow("Live search while typing", self.chk_live_search)
-
         self.spn_search_debounce = QSpinBox()
         self.spn_search_debounce.setRange(0, 10)
         self.spn_search_debounce.setValue(
@@ -105,23 +101,28 @@ class SettingsPage(QWidget):
         frm_app = QFormLayout(grp_app)
         frm_app.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        self.chk_app_auto = QCheckBox()
-        self.chk_app_auto.setChecked(settings.app.auto_update)
-        frm_app.addRow("Auto-update app on launch", self.chk_app_auto)
+        # NEW: On launch behavior combo replaces two checkboxes
+        self.cmb_app_behavior = QComboBox()
+        self.cmb_app_behavior.addItems(
+            [
+                "Do nothing on launch",
+                "Check on launch (prompt)",
+                "Auto-update on launch",
+            ]
+        )
+        # map current settings to combo
+        if settings.app.auto_update:
+            self.cmb_app_behavior.setCurrentIndex(2)
+        elif getattr(settings.app, "check_on_launch", False):
+            self.cmb_app_behavior.setCurrentIndex(1)
+        else:
+            self.cmb_app_behavior.setCurrentIndex(0)
+        frm_app.addRow("On launch behavior", self.cmb_app_behavior)
 
         self.cmb_app_channel = QComboBox()
         self.cmb_app_channel.addItems(["release", "prerelease", "nightly"])
         self.cmb_app_channel.setCurrentText(settings.app.channel)
         frm_app.addRow("Update channel", self.cmb_app_channel)
-
-        # NEW: Check updates on launch (prompt)
-        self.chk_app_check_prompt = QCheckBox()
-        self.chk_app_check_prompt.setChecked(
-            getattr(settings.app, "check_on_launch", False)
-        )
-        frm_app.addRow(
-            "Check for updates on launch (prompt)", self.chk_app_check_prompt
-        )
 
         self.btn_app_check = QPushButton("Check app update")
         self.btn_app_check.clicked.connect(self.checkAppCheckOnlyRequested.emit)
@@ -129,6 +130,23 @@ class SettingsPage(QWidget):
 
         lay.addWidget(grp_app)
         lay.addStretch(1)
+
+        # NEW: wheel-blocker to prevent accidental value changes on hover
+        class _NoWheelFilter(QObject):
+            def eventFilter(self, obj, event):
+                if event.type() == QEvent.Type.Wheel:
+                    return True
+                return super().eventFilter(obj, event)
+
+        self._nowheel = _NoWheelFilter(self)
+        # Install on all spin/combo inputs
+        for w in (
+            self.spn_search_debounce,
+            self.cmb_ytdlp_branch,
+            self.cmb_app_channel,
+            self.cmb_app_behavior,
+        ):
+            w.installEventFilter(self._nowheel)
 
         # NEW: Reset to defaults button at bottom
         self.btn_reset_defaults = QPushButton("Reset to Default Settings")
@@ -140,18 +158,13 @@ class SettingsPage(QWidget):
         for w in (
             self.chk_clear_after_fetch,
             self.chk_auto_search_text,
-            self.chk_live_search,
             self.chk_ytdlp_auto,
-            self.chk_app_auto,
-            self.chk_app_check_prompt,
         ):
             w.toggled.connect(self.changed.emit)
         self.spn_search_debounce.valueChanged.connect(self.changed.emit)
         self.cmb_ytdlp_branch.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_channel.currentTextChanged.connect(self.changed.emit)
-
-        self.chk_app_auto.toggled.connect(self._on_auto_update_toggled)
-        self.chk_app_check_prompt.toggled.connect(self._on_check_prompt_toggled)
+        self.cmb_app_behavior.currentIndexChanged.connect(self.changed.emit)
 
     def _confirm_reset_defaults(self):
         if (
@@ -165,44 +178,37 @@ class SettingsPage(QWidget):
         ):
             self.resetDefaultsRequested.emit()
 
-    # NEW
-    def _on_auto_update_toggled(self, checked: bool):
-        if checked:
-            self.chk_app_check_prompt.blockSignals(True)
-            self.chk_app_check_prompt.setChecked(False)
-            self.chk_app_check_prompt.blockSignals(False)
-        self.changed.emit()
+    def apply_to(self, settings: AppSettings):
+        # UI
+        settings.ui.clear_input_after_fetch = self.chk_clear_after_fetch.isChecked()
+        settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
+        settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
 
-    # NEW
-    def _on_check_prompt_toggled(self, checked: bool):
-        if checked:
-            self.chk_app_auto.blockSignals(True)
-            self.chk_app_auto.setChecked(False)
-            self.chk_app_auto.blockSignals(False)
+        # yt-dlp
+        settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
+        settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
+
+        # App updates (mapped from behavior combo)
+        behavior = self.cmb_app_behavior.currentIndex()
+        settings.app.auto_update = behavior == 2
+        settings.app.check_on_launch = behavior == 1
+        settings.app.channel = self.cmb_app_channel.currentText()
+        self.chk_app_auto.setChecked(False)
+        self.chk_app_auto.blockSignals(False)
         self.changed.emit()
 
     def apply_to(self, settings: AppSettings):
-        settings.ui.fast_paste_enabled = False
-        settings.ui.background_metadata_enabled = False
+        # CHANGED: clean and safe assignments only to existing controls
         settings.ui.clear_input_after_fetch = self.chk_clear_after_fetch.isChecked()
         settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
-        settings.ui.live_search = self.chk_live_search.isChecked()
         settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
+
         settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
         settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
-        settings.app.auto_update = self.chk_app_auto.isChecked()
-        settings.app.channel = self.cmb_app_channel.currentText()
-        settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()
-        settings.app.channel = self.cmb_app_channel.currentText()
-        settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()
-        settings.ui.fast_paste_enabled = self.chk_fast_paste.isChecked()
-        settings.ui.background_metadata_enabled = self.chk_bg_meta.isChecked()
-        settings.ui.clear_input_after_fetch = self.chk_clear_after_fetch.isChecked()
-        settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
-        settings.ui.live_search = self.chk_live_search.isChecked()
-        settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
-        settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
-        settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
-        settings.app.auto_update = self.chk_app_auto.isChecked()
+
+        # Map behavior combo to flags
+        behavior = self.cmb_app_behavior.currentIndex()
+        settings.app.auto_update = behavior == 2
+        settings.app.check_on_launch = behavior == 1
         settings.app.channel = self.cmb_app_channel.currentText()
         settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()

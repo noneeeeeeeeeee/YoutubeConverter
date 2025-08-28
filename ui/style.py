@@ -19,6 +19,43 @@ QFrame#Sidebar {{
     background: #202125;
     border-right: 1px solid #2e2f33;
 }}
+
+/* Accent vertical separator */
+QFrame#AccentVLine {{
+    background-color: {ac};
+    min-width: 1px;
+    max-width: 1px;
+    margin: 0 6px;
+}}
+
+/* Lists: frameless, full-row hover/selection */
+QListView, QListWidget, QTreeView {{
+    border: none;
+    background: #1e1f22;
+    outline: 0;
+}}
+QListView::item, QListWidget::item {{
+    margin: 2px;            /* CHANGED: tighter gaps */
+    padding: 8px;           /* CHANGED: tighter padding */
+    border-radius: 10px;
+    border: 1px solid transparent;
+}}
+/* Light accent on hover, darker on selected */
+QListView::item:hover, QListWidget::item:hover {{
+    background: #24252a;
+    border-color: {ac};
+}}
+QListView::item:selected, QListWidget::item:selected {{
+    background: {ac};
+    color: #ffffff;
+    border-color: {ac};
+}}
+/* Ensure selection fills full row width */
+QListView::icon, QListWidget::icon {{
+    padding-right: 8px;
+}}
+
+/* Buttons */
 QPushButton {{
     background: #2a2b30;
     border: 1px solid #33343a;
@@ -27,20 +64,52 @@ QPushButton {{
 }}
 QPushButton:hover {{ border-color: {ac}; }}
 QPushButton:pressed {{ background: #25262a; }}
-/* Toggle state */
 QPushButton:checked {{
     border-color: {ac};
     background: #2d2e33;
 }}
-/* Remove focus outline */
+QPushButton#IconButton {{ font-size: 18px; padding: 0; }}
+
+/* Primary/Danger buttons */
+QPushButton#PrimaryButton {{
+    background: {ac};
+    color: #ffffff;
+    border: 1px solid {ac};
+}}
+QPushButton#PrimaryButton:hover {{ filter: brightness(1.1); }}
+QPushButton#PrimaryButton:pressed {{ filter: brightness(0.95); }}
+
+QPushButton#DangerButton {{
+    background: #c53030;
+    color: #ffffff;
+    border: 1px solid #a82b2b;
+}}
+QPushButton#DangerButton:hover {{ background: #d13a3a; }}
+QPushButton#DangerButton:pressed {{ background: #b22a2a; }}
+
+/* Segmented buttons (Audio/Video) */
+QPushButton#SegmentButton {{
+    background: #232428;
+    border: 1px solid #34353b;
+    border-radius: 8px;
+    padding: 6px 10px;
+}}
+QPushButton#SegmentButton:hover {{ border-color: {ac}; }}
+QPushButton#SegmentButton:checked {{
+    border-color: {ac};
+    color: {ac};
+    background: #24252a;
+}}
+
+/* Inputs */
 QPushButton:focus, QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QCheckBox:focus, QRadioButton:focus {{
     outline: 0; border: 1px solid #34353b;
 }}
-QPushButton#IconButton {{ font-size: 18px; padding: 0; }}
 QLineEdit, QComboBox, QTextEdit {{
     background: #222327; border: 1px solid #34353b; border-radius: 8px; padding: 6px 8px;
 }}
-/* Win11-like CheckBox indicator (default checkboxes) */
+
+/* Win11-like CheckBox indicator */
 QCheckBox::indicator {{
     width: 18px; height: 18px;
     border: 2px solid #5a5b61;
@@ -54,7 +123,8 @@ QCheckBox::indicator:checked {{
     background: #2a2b30;
     image: url(:/qt-project.org/styles/commonstyle/images/checkboxindicatorcheck.png);
 }}
-/* Button-like checkbox (used for 'Add multiple') */
+
+/* Button-like checkbox ('Add multiple') */
 QCheckBox#ButtonLike {{
     background: #2a2b30;
     border: 1px solid #33343a;
@@ -66,24 +136,51 @@ QCheckBox#ButtonLike:checked {{
     border-color: {ac};
     background: #2d2e33;
 }}
-QCheckBox#ButtonLike::indicator {{
-    width: 0px; height: 0px; /* hide default square */
-}}
-/* ProgressBar */
+QCheckBox#ButtonLike::indicator {{ width: 0px; height: 0px; }}
+
+/* ProgressBar (default) */
 QProgressBar {{
     border: 1px solid #34353b; border-radius: 8px; background: #24252a; text-align: center;
 }}
 QProgressBar::chunk {{ background-color: {ac}; border-radius: 8px; }}
-/* Scrollbars */
-QScrollBar:vertical {{ background: transparent; width: 12px; margin: 0; }}
-QScrollBar::handle:vertical {{ background: #3a3b41; min-height: 24px; border-radius: 6px; margin: 2px; }}
+
+/* Download progress bars: transparent background so row highlight shows through */
+QProgressBar#DlProgress {{
+    background: transparent;           /* CHANGED: transparent */
+    border: 1px solid #34353b;
+    border-radius: 8px;
+}}
+QProgressBar#DlProgress::chunk {{ background-color: {ac}; border-radius: 8px; }}
+
+/* Scrollbars (Win11-like) */
+QScrollBar:vertical {{
+    background: transparent; width: 12px; margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: #3a3b41; min-height: 24px; border-radius: 6px; margin: 2px;
+}}
 QScrollBar::handle:vertical:hover {{ background: {ac}; }}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; width: 0; }}
-QScrollBar:horizontal {{ background: transparent; height: 12px; margin: 0; }}
-QScrollBar::handle:horizontal {{ background: #3a3b41; min-width: 24px; border-radius: 6px; margin: 2px; }}
+QScrollBar::handle:vertical:pressed {{ background: {ac}; filter: brightness(0.9); }}
+
+QScrollBar:horizontal {{
+    background: transparent; height: 12px; margin: 0;
+}}
+QScrollBar::handle:horizontal {{
+    background: #3a3b41; min-width: 24px; border-radius: 6px; margin: 2px;
+}}
 QScrollBar::handle:horizontal:hover {{ background: {ac}; }}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ height: 0; width: 0; }}
+QScrollBar::handle:horizontal:pressed {{ background: {ac}; filter: brightness(0.9); }}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0; height: 0;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: transparent;
+}}
 QScrollBar::corner {{ background: transparent; }}
+
 /* Tabs */
 QTabWidget::pane {{
     border: 1px solid #34353b; border-radius: 10px; padding: 6px; top: -1px; background: #1f2024;
@@ -96,6 +193,17 @@ QTabBar::tab {{
 QTabBar::tab:selected {{ background: #24252a; color: {ac}; border-color: #34353b; margin-top: 0; }}
 QTabBar::tab:hover {{ color: {ac}; }}
 QTabBar::tear {{ width: 0; height: 0; }}
+
+/* Group boxes (Settings/sections) */
+QGroupBox {{
+    border: 1px solid #34353b; border-radius: 10px; margin-top: 10px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin; subcontrol-position: top left;
+    padding: 4px 8px; color: {ac}; font-weight: 600;
+    background: transparent;
+}}
+
 /* Stepper */
 #StepperLabel {{
     background: #24252a; border: 1px solid #34353b; border-radius: 16px; padding: 6px 12px;

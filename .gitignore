@@ -2,9 +2,4 @@
 settings.json
 /yt-dlp-bin
 *.pyc
-core/__pycache__/settings.cpython-311.pyc
-core/__pycache__/yt_manager.cpython-311.pyc
-ui/__pycache__/style.cpython-311.pyc
-widgets/__pycache__/step1_link.cpython-311.pyc
-widgets/__pycache__/step3_quality.cpython-311.pyc
-widgets/__pycache__/step4_downloads.cpython-311.pyc
+

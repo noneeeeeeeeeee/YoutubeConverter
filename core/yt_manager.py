@@ -15,7 +15,7 @@ HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.5",
 }
-EXTRACTOR_ARGS = {  # used for Python API metadata paths
+EXTRACTOR_ARGS = {
     "youtube": {"player_client": ["tv"], "skip": ["dash", "hls"]},
     "youtubetab": {"skip": ["webpage"]},
 }
@@ -184,7 +184,7 @@ class InfoFetcher(QThread):
             raise RuntimeError("Empty response from yt-dlp")
         return json.loads(proc.stdout)
 
-    def _extract_with_python_api(self) -> dict:
+    def _extract_with_python_api(self, use_tv_client: bool = True) -> dict:
         is_search = self._is_search()
         is_playlist = self._is_playlist()
         ydl_opts = {
@@ -196,26 +196,26 @@ class InfoFetcher(QThread):
             "socket_timeout": 15,
             "extractor_retries": 1 if (is_search or is_playlist) else 2,
             "cachedir": False,
-            "http_headers": HTTP_HEADERS,  # CHANGED
-            "extractor_args": EXTRACTOR_ARGS,  # CHANGED
+            "http_headers": HTTP_HEADERS,
         }
+        if use_tv_client:
+            ydl_opts["extractor_args"] = EXTRACTOR_ARGS
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(self.url, download=False)
 
     def run(self):
         try:
-            # Prefer binary with hard timeout to avoid limbo hangs
             if os.path.exists(YTDLP_EXE):
                 info = self._extract_with_binary()
             else:
-                info = self._extract_with_python_api()
+                info = self._extract_with_python_api(use_tv_client=True)
             self.finished_ok.emit(info)
         except subprocess.TimeoutExpired:
             self.finished_fail.emit("Timed out while fetching info")
-        except Exception:
-            # Fallback once via Python API if binary failed
+        except Exception as e:
+            # Fallback once via Python API without TV client (fixes “not available on this app”)
             try:
-                info = self._extract_with_python_api()
+                info = self._extract_with_python_api(use_tv_client=False)
                 self.finished_ok.emit(info)
             except Exception as e2:
                 self.finished_fail.emit(str(e2))
@@ -270,20 +270,22 @@ class Downloader(QThread):
 
     def _hook_builder(self, idx: int):
         def hook(d):
-            # Pause handling
             self._pause_evt.wait()
             if self._stop:
                 raise yt_dlp.utils.DownloadError("Stopped by user")
-            if d["status"] == "downloading":
+            status = d.get("status")
+            if status == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimated") or 0
                 downloaded = d.get("downloaded_bytes", 0)
                 pct = (downloaded / total * 100.0) if total else 0.0
                 speed = d.get("speed") or 0.0
                 eta = d.get("eta")
                 self.itemProgress.emit(idx, pct, speed, eta)
-            elif d["status"] == "finished":
+            elif status == "finished":
                 self.itemStatus.emit(idx, "Processing...")
-            # else ignored
+            elif status == "postprocessing":
+                # keep UI in processing (indeterminate)
+                self.itemStatus.emit(idx, "Processing...")
 
         return hook
 
@@ -305,41 +307,14 @@ class Downloader(QThread):
                 except Exception:
                     pass
 
-        # Start metadata fetchers for items missing metadata
+        # CHANGED: do not start or wait for metadata; download directly in order
         for idx, it in enumerate(self.items):
             if self._stop:
                 break
-            if self._needs_metadata(it):
-                url = it.get("webpage_url") or it.get("url")
-                if url:
-                    self._start_meta_fetch(idx, url)
-
-        # Build processing order: ready items first, then awaiting ones
-        ready = [i for i, it in enumerate(self.items) if not self._needs_metadata(it)]
-        waiting = [i for i, it in enumerate(self.items) if self._needs_metadata(it)]
-        order: List[int] = ready + waiting
-
-        stalled_rounds = 0
-        while order and not self._stop:
-            idx = order.pop(0)
-            it = self.items[idx]
             url = it.get("webpage_url") or it.get("url")
             if not url:
                 self.itemStatus.emit(idx, "Invalid URL")
                 continue
-
-            if self._needs_metadata(it):
-                # Still waiting for metadata -> skip for now
-                order.append(idx)
-                stalled_rounds += 1
-                if stalled_rounds >= len(order) + 1:
-                    # Avoid tight loop; give metadata fetchers time
-                    QThread.msleep(100)
-                    stalled_rounds = 0
-                continue
-            stalled_rounds = 0
-
-            # Download now that metadata is ready
             self.itemStatus.emit(idx, "Starting...")
             opts = build_ydl_opts(
                 self.base_dir,
@@ -363,6 +338,7 @@ class Downloader(QThread):
 
         self.finished_all.emit()
 
+    # Keep stubs (unused now)
     def _start_meta_fetch(self, idx: int, url: str):
         # Avoid duplicate starts
         if idx in self._meta_threads:
@@ -400,6 +376,32 @@ class Downloader(QThread):
         f.start()
 
     def _needs_metadata(self, it: dict) -> bool:
+        # Heuristic: fast-paste placeholders usually have only url/title and lack id/thumbnail
+        if not it:
+            return True
+        if not it.get("url") and not it.get("webpage_url"):
+            return False  # invalid item handled elsewhere
+        has_core = (
+            bool(it.get("id")) or bool(it.get("duration")) or bool(it.get("extractor"))
+        )
+        has_thumb = bool(it.get("thumbnail")) or bool(it.get("thumbnails"))
+        return not (has_core and has_thumb)
+
+    def _extract_info_quick(self, url: str) -> dict:
+        # Lightweight metadata extraction (no download), cache disabled
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "noprogress": True,
+            "noplaylist": False,
+            "socket_timeout": 15,
+            "extractor_retries": 1,
+            "cachedir": False,
+            "http_headers": HTTP_HEADERS,
+            "extractor_args": EXTRACTOR_ARGS,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
         # Heuristic: fast-paste placeholders usually have only url/title and lack id/thumbnail
         if not it:
             return True

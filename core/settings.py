@@ -49,6 +49,9 @@ class YtDlpSettings:
 class AppUpdateSettings:
     auto_update: bool = True
     channel: str = "release"
+    check_on_launch: bool = (
+        False  # NEW: prompt on launch (mutually exclusive with auto_update)
+    )
 
 
 @dataclass

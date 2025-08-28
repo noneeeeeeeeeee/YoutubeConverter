@@ -173,11 +173,12 @@ jobs:
             }
 
       - name: Upload asset to Draft Release
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.draft.outputs.upload_url }}
-          asset_path: ${{ steps.draft_pkg.outputs.ver_zip }}
-          asset_name: ${{ steps.draft_pkg.outputs.ver_zip }}
-          asset_content_type: application/zip
+          tag_name: v${{ steps.draft_pkg.outputs.ver }}
+          draft: true
+          files: |
+            ${{ steps.draft_pkg.outputs.ver_zip }}
+          fail_on_unmatched_files: true

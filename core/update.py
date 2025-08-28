@@ -7,14 +7,13 @@ from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-# Paths shared with yt_manager
 if getattr(sys, "frozen", False):
     ROOT_DIR = os.path.dirname(sys.executable)
 else:
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 YTDLP_DIR = os.path.join(ROOT_DIR, "yt-dlp-bin")
 YTDLP_EXE = os.path.join(YTDLP_DIR, "yt-dlp.exe")
-STAGING_DIR = os.path.join(ROOT_DIR, "_update_staging")  # NEW
+STAGING_DIR = os.path.join(ROOT_DIR, "_update_staging")
 
 
 def get_latest_release_info(branch: str) -> dict:
@@ -56,7 +55,7 @@ def current_binary_version() -> str:
     if not os.path.exists(YTDLP_EXE):
         return ""
     try:
-        kwargs = _hidden_subprocess_kwargs()  # CHANGED
+        kwargs = _hidden_subprocess_kwargs()
         out = subprocess.check_output([YTDLP_EXE, "--version"], timeout=10, **kwargs)
         return (out.decode(errors="ignore").strip().split()[0]) if out else ""
     except Exception:
@@ -70,7 +69,7 @@ def ensure_ytdlp_dir():
 def clear_ytdlp_cache():
     try:
         if os.path.exists(YTDLP_EXE):
-            kwargs = _hidden_subprocess_kwargs()  # CHANGED
+            kwargs = _hidden_subprocess_kwargs()
             subprocess.run([YTDLP_EXE, "--rm-cache-dir"], timeout=15, **kwargs)
     except Exception:
         pass
@@ -137,11 +136,12 @@ class YtDlpUpdateWorker(QThread):
 class AppUpdateWorker(QThread):
     status = pyqtSignal(str)
     updated = pyqtSignal(bool)
+    available = pyqtSignal(str, str)
 
     def __init__(self, repo: str, channel: str, current_version: str, do_update: bool):
         super().__init__()
         self.repo = repo
-        self.channel = (channel or "release").lower()  # release|prerelease|nightly
+        self.channel = (channel or "release").lower()
         self.current_version = current_version
         self.do_update = do_update
 
@@ -198,7 +198,6 @@ class AppUpdateWorker(QThread):
                     None,
                 ) or next((x for x in releases if x.get("prerelease")), None)
             else:
-                # Fallback: first entry if channel is unknown
                 return releases[0] if releases else None
         except Exception:
             return None
@@ -228,6 +227,21 @@ class AppUpdateWorker(QThread):
                 with zf.open(m) as src, open(out_path, "wb") as dst:
                     dst.write(src.read())
 
+    @staticmethod
+    def _normalize_version(v: str) -> str:
+        """
+        Normalize version strings for comparison:
+        - Trim whitespace
+        - Drop leading 'v' (common in tags) when followed by a digit
+        - Lower-case for stability
+        """
+        if not v:
+            return ""
+        s = v.strip()
+        if len(s) >= 2 and (s[0] in ("v", "V")) and s[1].isdigit():
+            s = s[1:]
+        return s.strip().lower()
+
     def run(self):
         try:
             self.status.emit("Checking app updates...")
@@ -236,29 +250,31 @@ class AppUpdateWorker(QThread):
                 self.status.emit("No releases found.")
                 self.updated.emit(False)
                 return
-            # Prefer the release title for nightly to match "Nightly Build {sha}"
             if self.channel == "nightly":
                 tag = rel.get("name") or rel.get("tag_name") or ""
             else:
                 tag = rel.get("tag_name") or rel.get("name") or ""
-            remote_ver = (tag or "").strip()
-            local_ver = self._local_version()
+            raw_remote_ver = (tag or "").strip()
+            raw_local_ver = self._local_version()
+
+            remote_ver = self._normalize_version(raw_remote_ver)
+            local_ver = self._normalize_version(raw_local_ver)
 
             if remote_ver and local_ver and remote_ver == local_ver:
-                self.status.emit(f"App up-to-date ({local_ver}) [{self.channel}]")
+                self.status.emit(
+                    f"App up-to-date ({raw_local_ver or local_ver}) [{self.channel}]"
+                )
                 self.updated.emit(False)
                 return
 
             if not self.do_update:
-                if remote_ver and local_ver:
-                    if remote_ver == local_ver:
-                        self.status.emit(
-                            f"App up-to-date ({local_ver}) [{self.channel}]"
-                        )
-                    else:
-                        self.status.emit(
-                            f"Update available {local_ver} -> {remote_ver} [{self.channel}]"
-                        )
+                if remote_ver and local_ver and remote_ver != local_ver:
+                    self.status.emit(
+                        f"Update available {raw_local_ver or local_ver} -> {raw_remote_ver or remote_ver} [{self.channel}]"
+                    )
+                    self.available.emit(
+                        raw_remote_ver or remote_ver, raw_local_ver or local_ver
+                    )  # NEW
                 else:
                     self.status.emit(f"Update check complete [{self.channel}]")
                 self.updated.emit(False)
@@ -272,7 +288,7 @@ class AppUpdateWorker(QThread):
             url = asset.get("browser_download_url")
             name = asset.get("name") or "update.zip"
             self.status.emit(f"Downloading {name}...")
-            os.makedirs(STAGING_DIR, exist_ok=True)  # NEW
+            os.makedirs(STAGING_DIR, exist_ok=True)
             tmp_zip = os.path.join(STAGING_DIR, "_update_tmp.zip")
             with requests.get(url, stream=True, timeout=60) as r:
                 r.raise_for_status()
@@ -283,7 +299,6 @@ class AppUpdateWorker(QThread):
 
             self.status.emit("Preparing update...")
             # Extract into staging (no in-place overwrite while running)
-            # Clean staging before extract
             for root, dirs, files in os.walk(STAGING_DIR):
                 for fn in files:
                     if fn != "_update_tmp.zip":
@@ -296,7 +311,6 @@ class AppUpdateWorker(QThread):
                 os.remove(tmp_zip)
             except Exception:
                 pass
-            # Mark pending update
             try:
                 with open(os.path.join(STAGING_DIR, ".pending"), "w") as f:
                     f.write(remote_ver or "")
@@ -307,24 +321,3 @@ class AppUpdateWorker(QThread):
         except Exception as e:
             self.status.emit(f"App update failed: {e}")
             self.updated.emit(False)
-
-
-if __name__ == "__main__":
-    # Simulate checking for nightly update
-    worker = AppUpdateWorker(
-        repo="noneeeeeeeeeee/YoutubeConverter",
-        channel="nightly",
-        current_version="Nightly Build 9b42477",
-        do_update=False,
-    )
-    rel = worker._get_release_json()
-    print("Fetched release JSON for nightly:")
-    if rel:
-        remote_ver = rel.get("name") or rel.get("tag_name") or ""
-        local_ver = worker._local_version()
-        print(f"Local version: {local_ver}")
-        print(f"Remote version (nightly): {remote_ver}")
-        print("Update available:", remote_ver != local_ver)
-    else:
-        print("No nightly release found.")
-        print("No nightly release found.")

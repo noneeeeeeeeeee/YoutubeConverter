@@ -1,17 +1,29 @@
 from typing import List, Dict
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
+from PyQt6.QtCore import (
+    Qt,
+    pyqtSignal,
+    QSize,
+    QTimer,
+    QPropertyAnimation,
+    QEasingCurve,
+    QAbstractAnimation,
+    QEvent,
+    QObject,
+)
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QRadioButton,
     QComboBox,
     QPushButton,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QButtonGroup,
+    QFrame,
+    QGraphicsOpacityEffect,  # CHANGED: moved here from QtGui
 )
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QIcon, QPixmap  # CHANGED: removed QGraphicsOpacityEffect
 
 from core.settings import AppSettings, SettingsManager
 from core.yt_manager import InfoFetcher
@@ -30,84 +42,152 @@ class Step3QualityWidget(QWidget):
         self._meta_fetchers: List[InfoFetcher] = []  # running re-fetchers
         self._url_index: Dict[str, int] = {}  # map url->index for quick updates
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
-        self.lbl = QLabel("Choose what to download:")
-        self.lbl.setAlignment(
+        # Header
+        self.header = QLabel("Choose what to download")
+        self.header.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
-        lay.addWidget(self.lbl)
+        font = self.header.font()
+        font.setPointSize(font.pointSize() + 1)
+        font.setBold(True)
+        self.header.setFont(font)
+        root.addWidget(self.header)
 
-        # Small preview list with thumbnails/titles, expands to fill available space
+        # Content: preview (left) + options (right)
+        content = QHBoxLayout()
+        content.setSpacing(10)
+        root.addLayout(content, 1)
+
+        # Left: preview
         self.preview = QListWidget()
         self.preview.setIconSize(QSize(96, 54))
-        lay.addWidget(self.preview, 1)
+        self.preview.setAlternatingRowColors(False)
+        self.preview.setFrameShape(QFrame.Shape.NoFrame)
+        self.preview.setSpacing(4)  # CHANGED: tighter spacing
+        self.preview.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        content.addWidget(self.preview, 2)
 
-        # Kind row
-        row = QHBoxLayout()
-        self.rad_audio = QRadioButton("Audio")
-        self.rad_video = QRadioButton("Video")
-        row.addWidget(self.rad_audio)
-        row.addWidget(self.rad_video)
-        row.addStretch(1)
-        lay.addLayout(row)
+        # NEW: accent vertical separator between list and options
+        vsep = QFrame()
+        vsep.setObjectName("AccentVLine")
+        vsep.setFrameShape(QFrame.Shape.VLine)
+        vsep.setLineWidth(1)
+        vsep.setFixedWidth(1)
+        content.addWidget(vsep)
 
+        # Right: options panel
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        content.addLayout(right, 1)
+
+        # Segmented kind selector
+        seg_row = QHBoxLayout()
+        seg_row.setSpacing(6)
+        self.btn_audio = QPushButton("Audio")
+        self.btn_audio.setCheckable(True)
+        self.btn_audio.setObjectName("SegmentButton")
+        self.btn_video = QPushButton("Video")
+        self.btn_video.setCheckable(True)
+        self.btn_video.setObjectName("SegmentButton")
+        self.kind_group = QButtonGroup(self)
+        self.kind_group.setExclusive(True)
+        self.kind_group.addButton(self.btn_audio)
+        self.kind_group.addButton(self.btn_video)
+        if self.settings.defaults.kind == "audio":
+            self.btn_audio.setChecked(True)
+        else:
+            self.btn_video.setChecked(True)
+        seg_row.addWidget(self.btn_audio)
+        seg_row.addWidget(self.btn_video)
+        seg_row.addStretch(1)
+        right.addLayout(seg_row)
+
+        # Format
         self.cmb_format = QComboBox()
-        self.cmb_format.setEditable(False)  # non-typable
-        lay.addWidget(self.cmb_format)
+        self.cmb_format.setEditable(False)
+        right.addWidget(self._labeled("Format:", self.cmb_format))
 
-        qrow = QHBoxLayout()
-        qrow.addWidget(QLabel("Quality:"))
+        # Quality
         self.cmb_quality = QComboBox()
-        qrow.addWidget(self.cmb_quality, 1)
-        lay.addLayout(qrow)
+        right.addWidget(self._labeled("Quality:", self.cmb_quality))
 
-        # Bottom action row: Back (left) and Next (right)
-        btn_row = QHBoxLayout()
+        right.addStretch(1)
+
+        # Footer bar with Back (left) and Next (right) - consistent across steps
+        footer = QHBoxLayout()
+        # add a top separator line via a QFrame
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        root.addWidget(sep)
         self.btn_back = QPushButton("Back")
-        btn_row.addWidget(self.btn_back)
-        btn_row.addStretch(1)
         self.btn_next = QPushButton("Next")
-        btn_row.addWidget(self.btn_next)
-        lay.addLayout(btn_row)
+        self.btn_next.setObjectName("PrimaryButton")
+        footer.addWidget(self.btn_back)
+        footer.addStretch(1)
+        footer.addWidget(self.btn_next)
+        root.addLayout(footer)
 
         # Defaults
-        if self.settings.defaults.kind == "audio":
-            self.rad_audio.setChecked(True)
-        else:
-            self.rad_video.setChecked(True)
-        self.cmb_format.addItems(
-            ["mp3", "m4a", "flac", "wav", "opus", "mp4", "mkv", "webm"]
-        )
-        self.cmb_format.setCurrentText(self.settings.defaults.format)
+        self._apply_kind_defaults()
 
         # Signals
         self.btn_back.clicked.connect(self.backRequested.emit)
         self.btn_next.clicked.connect(self._confirm)
-        self.rad_audio.toggled.connect(self._kind_changed)
+        self.btn_audio.toggled.connect(self._kind_toggled)
 
-        self._kind_changed(self.rad_audio.isChecked())
-
-        # Timer was used to delay refetch; keep constructed but we will fetch immediately
+        # Timer (kept but unused for background refetch)
         self._refetch_timer = QTimer(self)
         self._refetch_timer.setSingleShot(True)
         self._refetch_timer.timeout.connect(self._start_refetch_missing)
 
+        # NEW: block mouse wheel on comboboxes to avoid accidental changes
+        class _NoWheelFilter(QObject):
+            def eventFilter(self, obj, event):
+                if event.type() == QEvent.Type.Wheel:
+                    return True
+                return super().eventFilter(obj, event)
+
+        self._nowheel = _NoWheelFilter(self)
+        for w in (self.cmb_format, self.cmb_quality):
+            w.installEventFilter(self._nowheel)
+
+    def _labeled(self, text: str, w: QWidget) -> QWidget:
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lab = QLabel(text)
+        lay.addWidget(lab)
+        lay.addWidget(w, 1)
+        return row
+
+    def _apply_kind_defaults(self):
+        # Populate format choices based on kind
+        if self.btn_audio.isChecked():
+            self.cmb_format.clear()
+            self.cmb_format.addItems(["mp3", "m4a", "flac", "wav", "opus"])
+        else:
+            self.cmb_format.clear()
+            self.cmb_format.addItems(["mp4", "mkv", "webm"])
+        self.cmb_format.setCurrentText(self.settings.defaults.format)
+        self._populate_quality_options()
+
     def set_items(self, items: List[Dict]):
         self.items = items
-        # Build url index
         self._url_index = {}
         for i, it in enumerate(items):
             u = it.get("webpage_url") or it.get("url")
             if u:
                 self._url_index[u] = i
 
-        self.lbl.setText(
+        self.header.setText(
             f"Selected {len(items)} item(s). Choose output format and quality."
         )
-        # Populate preview with thumbnails and titles
         self.preview.clear()
         for it in items:
             title = it.get("title") or "Untitled"
@@ -116,21 +196,28 @@ class Step3QualityWidget(QWidget):
             if pix:
                 lw.setIcon(QIcon(pix))
             self.preview.addItem(lw)
-        # Adjust preview height
-        if len(items) <= 1:
-            self.preview.setFixedHeight(self.preview.iconSize().height() + 16)
-        else:
-            self.preview.setMinimumHeight(96)
-            self.preview.setMaximumHeight(150)
 
-        # Refresh quality options according to current kind
+        # Fade-in transition for a clean update
+        eff = QGraphicsOpacityEffect(self.preview)
+        self.preview.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(200)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+
+        # REMOVE height constraints so list fills and scrolls naturally
+        # if len(items) <= 1:
+        #     self.preview.setFixedHeight(self.preview.iconSize().height() + 16)
+        # else:
+        #     self.preview.setMinimumHeight(120)
+        #     self.preview.setMaximumHeight(220)
+
         self._populate_quality_options()
-        # Background metadata only if enabled
-        if getattr(self.settings.ui, "background_metadata_enabled", True):
-            self._start_refetch_missing()
-        else:
-            self._cleanup_fetchers()
-        self._refetch_timer.stop()
+        self._cleanup_fetchers()
+        if hasattr(self, "_refetch_timer"):
+            self._refetch_timer.stop()
 
     def _load_thumb(self, it: Dict):
         url = it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get("url")
@@ -149,16 +236,8 @@ class Step3QualityWidget(QWidget):
             return None
         return None
 
-    def _kind_changed(self, audio_checked: bool):
-        # Update format suggestions
-        if audio_checked:
-            self.cmb_format.clear()
-            self.cmb_format.addItems(["mp3", "m4a", "flac", "wav", "opus"])
-        else:
-            self.cmb_format.clear()
-            self.cmb_format.addItems(["mp4", "mkv", "webm"])
-        # Repopulate quality options for the selected kind
-        self._populate_quality_options()
+    def _kind_toggled(self, audio_checked: bool):
+        self._apply_kind_defaults()
 
     def _has_formats(self, it: Dict) -> bool:
         fmts = it.get("formats")
@@ -171,21 +250,19 @@ class Step3QualityWidget(QWidget):
 
         if not self.items:
             self.cmb_quality.addItems(
-                default_a if self.rad_audio.isChecked() else default_v
+                default_a if self.btn_audio.isChecked() else default_v
             )
             return
 
         # Single-item special handling
         if len(self.items) == 1 and not self._has_formats(self.items[0]):
-            # Unknown metadata -> allow only best/worse for now
             self.cmb_quality.addItems(["best", "worse"])
             return
 
-        # Build union across known items for playlists or fully-known single
         fmts_lists = [
             it.get("formats") or [] for it in self.items if self._has_formats(it)
         ]
-        if self.rad_audio.isChecked():
+        if self.btn_audio.isChecked():
             abrs = sorted(
                 {
                     int(f.get("abr"))
@@ -211,57 +288,29 @@ class Step3QualityWidget(QWidget):
             self.cmb_quality.addItems(opts)
 
     def _start_refetch_missing(self):
+        # disabled background refetching
         self._cleanup_fetchers()
-        if not getattr(self.settings.ui, "background_metadata_enabled", True):
-            return
-        for it in self.items:
-            if self._has_formats(it):
-                continue
-            url = it.get("webpage_url") or it.get("url")
-            if not url:
-                continue
-            f = InfoFetcher(url)
-
-            def _ok(meta, url=url):
-                idx = self._url_index.get(url, -1)
-                if idx >= 0 and isinstance(meta, dict):
-                    self.items[idx] = {**self.items[idx], **meta}
-                    title = self.items[idx].get("title") or "Untitled"
-                    lw = self.preview.item(idx)
-                    if lw:
-                        lw.setText(title)
-                        # Update icon when thumbnail becomes available
-                        pix = self._load_thumb(self.items[idx])
-                        if pix:
-                            lw.setIcon(QIcon(pix))
-                    self._populate_quality_options()
-
-            def _fail(err):
-                pass
-
-            f.finished_ok.connect(_ok)
-            f.finished_fail.connect(_fail)
-            self._meta_fetchers.append(f)
-            f.start()
+        return
 
     def _cleanup_fetchers(self):
         for f in self._meta_fetchers:
             try:
-                if f.isRunning():
-                    f.terminate()
-                    f.wait(300)
+                f.finished_ok.disconnect()
+            except Exception:
+                pass
+            try:
+                f.finished_fail.disconnect()
             except Exception:
                 pass
         self._meta_fetchers.clear()
 
     def _confirm(self):
-        # Cancel any refetch still in flight when proceeding
-        self._refetch_timer.stop()
+        if hasattr(self, "_refetch_timer"):
+            self._refetch_timer.stop()
         self._cleanup_fetchers()
-        kind = "audio" if self.rad_audio.isChecked() else "video"
+        kind = "audio" if self.btn_audio.isChecked() else "video"
         fmt = self.cmb_format.currentText().strip()
         quality = self.cmb_quality.currentText().strip() or "best"
-        # Remember last choice automatically
         self.settings.defaults.kind = kind
         self.settings.defaults.format = fmt
         SettingsManager().save(self.settings)

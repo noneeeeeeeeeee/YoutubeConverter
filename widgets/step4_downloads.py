@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QProgressBar,
+    QFrame,  # NEW
 )
 
 from core.settings import AppSettings, SettingsManager
@@ -24,21 +25,25 @@ class DownloadItemWidget(QWidget):
     def __init__(self, title: str):
         super().__init__()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(8)
+        lay.setContentsMargins(4, 4, 4, 4)  # keep in sync with Step 1 spacing feel
+        lay.setSpacing(6)  # CHANGED: tighter spacing
 
         self.thumb = QLabel()
         self.thumb.setFixedSize(96, 54)
         self.thumb.setStyleSheet(
             "background:#111;border:1px solid #333;border-radius:6px;"
         )
-        self.thumb.setScaledContents(True)
+        self.thumb.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )  # NEW: center with letterbox
+        self.thumb.setScaledContents(False)  # NEW: prevent stretch
 
         self.title = QLabel(title)
         self.title.setWordWrap(True)
 
         self.status = QLabel("Waiting...")
         self.progress = QProgressBar()
+        self.progress.setObjectName("DlProgress")
         self.progress.setValue(0)
 
         col = QVBoxLayout()
@@ -48,6 +53,14 @@ class DownloadItemWidget(QWidget):
 
         lay.addWidget(self.thumb)
         lay.addLayout(col, 1)
+
+        # Reserve full height before hiding status/progress so the list doesn't jump
+        self._full_size_hint = self.sizeHint()  # CHANGED: compute while visible
+        self.status.hide()
+        self.progress.hide()
+
+    def full_size_hint(self):
+        return self._full_size_hint
 
 
 class Step4DownloadsWidget(QWidget):
@@ -63,20 +76,21 @@ class Step4DownloadsWidget(QWidget):
         self.fmt = "mp3"
         self.quality = "best"
         self.downloader: Optional[Downloader] = None
-        self._meta_fetchers: dict[int, InfoFetcher] = {}  # NEW: idx -> fetcher
+        self._meta_fetchers: dict[int, InfoFetcher] = {}
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
 
-        top = QHBoxLayout()
+        # REMOVE top control row and move controls to footer
+        # top = QHBoxLayout()
         self.btn_back = QPushButton("Back")
         self.lbl_dir = QLabel(self.settings.last_download_dir)
         self.btn_choose = QPushButton("Choose folder")
         self.btn_start = QPushButton("Start")
         self.btn_start.setEnabled(False)
         self.btn_stop = QPushButton("Stop")
-        self.btn_stop.setEnabled(False)
+        self.btn_stop.setVisible(False)  # CHANGED: hidden until started
         self.btn_done = QPushButton("Done")
         self.btn_done.setVisible(False)
         self.btn_back.clicked.connect(self.backRequested.emit)
@@ -84,20 +98,45 @@ class Step4DownloadsWidget(QWidget):
         self.btn_start.clicked.connect(self._toggle_start_pause)
         self.btn_stop.clicked.connect(self._stop_downloads)
         self.btn_done.clicked.connect(self._done_clicked)
-        top.addWidget(self.btn_back)
-        top.addWidget(QLabel("Save to:"))
-        top.addWidget(self.lbl_dir, 1)
-        top.addWidget(self.btn_choose)
-        top.addWidget(self.btn_start)
-        top.addWidget(self.btn_stop)
-        top.addWidget(self.btn_done)
-        lay.addLayout(top)
 
+        # List content
         self.list = QListWidget()
+        self.list.setFrameShape(QFrame.Shape.NoFrame)
+        self.list.setSpacing(4)
+        self.list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         lay.addWidget(self.list, 1)
 
+        # Footer with separator and controls (Back on left, folder + actions on right)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        lay.addWidget(sep)
+
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        footer.addWidget(self.btn_back)
+
+        # Middle: folder picker
+        folder_bar = QHBoxLayout()
+        folder_bar.setSpacing(6)
+        folder_bar.addWidget(QLabel("Save to:"))
+        folder_bar.addWidget(self.lbl_dir, 1)
+        folder_bar.addWidget(self.btn_choose)
+        footer.addLayout(folder_bar, 1)
+
+        # Right: actions
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
+        actions.addWidget(self.btn_start)
+        actions.addWidget(self.btn_stop)
+        actions.addWidget(self.btn_done)
+        footer.addLayout(actions)
+        lay.addLayout(footer)
+
     def configure(self, selection: Dict, settings: AppSettings):
-        # Reset any previous downloader session
+        # Stop any prior background metadata fetchers safely
+        self._cleanup_bg_metadata()  # NEW
         if self.downloader:
             try:
                 self.downloader.stop()
@@ -115,12 +154,7 @@ class Step4DownloadsWidget(QWidget):
         for idx, it in enumerate(self.items):
             title = it.get("title") or "Untitled"
             w = DownloadItemWidget(title)
-            # Pre-start status reflects metadata state
-            if self._needs_metadata(it):
-                w.status.setText("Fetching metadata...")
-            else:
-                w.status.setText("Waiting...")
-            # NEW: show thumbnail if already available
+            # Thumb (preserve aspect)
             thumb_url = it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get(
                 "url"
             )
@@ -132,25 +166,30 @@ class Step4DownloadsWidget(QWidget):
                     if r.ok:
                         pix = QPixmap()
                         if pix.loadFromData(r.content):
-                            w.thumb.setPixmap(pix)
+                            w.thumb.setPixmap(
+                                pix.scaled(
+                                    w.thumb.size(),
+                                    Qt.AspectRatioMode.KeepAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation,
+                                )
+                            )  # CHANGED
                 except Exception:
                     pass
             item = QListWidgetItem()
-            item.setSizeHint(w.sizeHint())
+            item.setSizeHint(w.full_size_hint())  # CHANGED: keep height stable
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
-        # Reset controls for a fresh session
         self.btn_start.setEnabled(True)
-        self.btn_start.setText("Start")  # NEW: ensure correct label
+        self.btn_start.setText("Start")
         self.btn_done.setVisible(False)
+        self.btn_stop.setVisible(False)  # CHANGED: keep hidden until start
         self.btn_stop.setEnabled(False)
 
-        # NEW: background metadata fetching before Start if enabled
-        if getattr(self.settings.ui, "background_metadata_enabled", True):
-            self._start_bg_metadata()
+        # CHANGED: do not start background metadata fetching
+        # if getattr(self.settings.ui, "background_metadata_enabled", True):
+        #     self._start_bg_metadata()
 
     def _start_bg_metadata(self):
-        # Start InfoFetcher for items lacking metadata; update UI on completion
         for idx, it in enumerate(self.items):
             if not self._needs_metadata(it) or idx in self._meta_fetchers:
                 continue
@@ -164,7 +203,6 @@ class Step4DownloadsWidget(QWidget):
                     self.items[i] = {**self.items[i], **(meta or {})}
                     w = self._get_widget(i)
                     if w:
-                        # Update title and thumbnail
                         title = self.items[i].get("title") or "Untitled"
                         w.title.setText(title)
                         turl = self.items[i].get("thumbnail") or (
@@ -181,11 +219,9 @@ class Step4DownloadsWidget(QWidget):
                                         w.thumb.setPixmap(px)
                             except Exception:
                                 pass
-                        # Keep status: will change on Start
-                        if self._needs_metadata(self.items[i]):
-                            w.status.setText("Fetching metadata...")
-                        else:
-                            w.status.setText("Waiting...")
+                        w.status.setText("Waiting...")
+                        w.progress.setRange(0, 100)
+                        w.progress.setValue(0)
                 finally:
                     self._meta_fetchers.pop(i, None)
 
@@ -196,6 +232,19 @@ class Step4DownloadsWidget(QWidget):
             f.finished_fail.connect(_fail)
             self._meta_fetchers[idx] = f
             f.start()
+
+    def _cleanup_bg_metadata(self):  # NEW
+        # Disconnect finished signals to avoid updating stale widgets on later runs
+        for i, f in list(self._meta_fetchers.items()):
+            try:
+                f.finished_ok.disconnect()
+            except Exception:
+                pass
+            try:
+                f.finished_fail.disconnect()
+            except Exception:
+                pass
+        self._meta_fetchers.clear()
 
     # NEW: small helper to mirror Downloader heuristic
     def _needs_metadata(self, it: dict) -> bool:
@@ -230,6 +279,16 @@ class Step4DownloadsWidget(QWidget):
         self.settings.last_download_dir = base
         self.settings_mgr.save(self.settings)
 
+        # Ensure all items show their UI only now
+        for i in range(self.list.count()):
+            w = self._get_widget(i)
+            if w:
+                w.status.setText("Queued")
+                w.status.show()
+                w.progress.setRange(0, 100)
+                w.progress.setValue(0)
+                w.progress.show()
+
         ff_path = FF_DIR if os.path.exists(FF_EXE) else None
         self.downloader = Downloader(
             self.items, base, self.kind, self.fmt, ff_path, quality=self.quality
@@ -240,6 +299,7 @@ class Step4DownloadsWidget(QWidget):
         self.downloader.finished_all.connect(self._on_all_finished)
         self.btn_start.setText("Pause")
         self.btn_start.setEnabled(True)
+        self.btn_stop.setVisible(True)  # CHANGED: show Stop once started
         self.btn_stop.setEnabled(True)
         self.downloader.start()
 
@@ -249,10 +309,13 @@ class Step4DownloadsWidget(QWidget):
                 self.downloader.stop()
             except Exception:
                 pass
-            self.downloader = None  # NEW: allow fresh start after stop
-        self.btn_start.setText("Start")  # NEW: reset label
+            self.downloader = None
+        self.btn_start.setText("Start")
         self.btn_start.setEnabled(False)
+        self.btn_stop.setVisible(False)  # CHANGED
         self.btn_stop.setEnabled(False)
+        # CHANGED: just clear any old bg metadata threads if present
+        self._cleanup_bg_metadata()
 
     def _choose_dir(self):
         d = QFileDialog.getExistingDirectory(
@@ -264,18 +327,29 @@ class Step4DownloadsWidget(QWidget):
     def _on_item_status(self, idx: int, text: str):
         w = self._get_widget(idx)
         if w:
+            if not w.status.isVisible():
+                w.status.show()  # ensure visible after start
+            if not w.progress.isVisible():
+                w.progress.show()
             w.status.setText(text)
-            # NEW: update the title when metadata becomes ready
-            if text.startswith("Metadata ready:"):
-                # Extract after colon
-                new_title = text.split(":", 1)[-1].strip() or "Untitled"
-                w.title.setText(new_title)
+            # Busy indicator for processing phase
+            if text.startswith("Processing"):
+                w.progress.setRange(0, 0)  # indeterminate
+            elif (
+                text.startswith("Error")
+                or text.startswith("Done")
+                or text.startswith("Stopped")
+            ):
+                w.progress.setRange(0, 100)
 
     def _on_item_progress(
         self, idx: int, percent: float, speed: float, eta: Optional[int]
     ):
         w = self._get_widget(idx)
         if w:
+            # Ensure determinate during downloading
+            if w.progress.minimum() == 0 and w.progress.maximum() == 0:
+                w.progress.setRange(0, 100)
             w.progress.setValue(int(percent))
             if eta is not None:
                 w.status.setText(
@@ -285,9 +359,15 @@ class Step4DownloadsWidget(QWidget):
     def _on_item_thumb(self, idx: int, data: bytes):
         w = self._get_widget(idx)
         if w:
-            pix = QPixmap()
-            if pix.loadFromData(data):
-                w.thumb.setPixmap(pix)
+            px = QPixmap()
+            if px.loadFromData(data):
+                w.thumb.setPixmap(
+                    px.scaled(
+                        w.thumb.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )  # CHANGED
 
     def _get_widget(self, idx: int) -> Optional[DownloadItemWidget]:
         it = self.list.item(idx)
@@ -298,9 +378,10 @@ class Step4DownloadsWidget(QWidget):
     def _on_all_finished(self):
         self.btn_done.setVisible(True)
         self.btn_start.setEnabled(False)
+        self.btn_stop.setVisible(False)  # CHANGED
         self.btn_stop.setEnabled(False)
-        self.btn_start.setText("Start")  # NEW: reset label after completion
-        self.downloader = None  # NEW: clear downloader so next run can start
+        self.btn_start.setText("Start")
+        self.downloader = None
         if self.settings.ui.reset_after_downloads:
             self.btn_done.setText("Reset")
         else:
@@ -312,9 +393,14 @@ class Step4DownloadsWidget(QWidget):
         self.reset()
 
     def reset(self):
+        self._cleanup_bg_metadata()
         self.list.clear()
         self.items = []
-        self.downloader = None  # NEW: ensure cleared on reset
+        self.downloader = None
+        self.btn_start.setText("Start")
+        self.btn_start.setEnabled(False)
+        self.btn_done.setVisible(False)
+        self.downloader = None
         self.btn_start.setText("Start")  # NEW: ensure label is correct after reset
         self.btn_start.setEnabled(False)
         self.btn_done.setVisible(False)

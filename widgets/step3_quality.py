@@ -97,7 +97,6 @@ class Step3QualityWidget(QWidget):
 
     def set_items(self, items: List[Dict]):
         self.items = items
-        # Build url index
         self._url_index = {}
         for i, it in enumerate(items):
             u = it.get("webpage_url") or it.get("url")
@@ -107,7 +106,6 @@ class Step3QualityWidget(QWidget):
         self.lbl.setText(
             f"Selected {len(items)} item(s). Choose output format and quality."
         )
-        # Populate preview with thumbnails and titles
         self.preview.clear()
         for it in items:
             title = it.get("title") or "Untitled"
@@ -116,21 +114,18 @@ class Step3QualityWidget(QWidget):
             if pix:
                 lw.setIcon(QIcon(pix))
             self.preview.addItem(lw)
-        # Adjust preview height
+
         if len(items) <= 1:
             self.preview.setFixedHeight(self.preview.iconSize().height() + 16)
         else:
             self.preview.setMinimumHeight(96)
             self.preview.setMaximumHeight(150)
 
-        # Refresh quality options according to current kind
         self._populate_quality_options()
-        # Background metadata only if enabled
-        if getattr(self.settings.ui, "background_metadata_enabled", True):
-            self._start_refetch_missing()
-        else:
-            self._cleanup_fetchers()
-        self._refetch_timer.stop()
+        # CHANGED: do not refetch in background; assume Step 1 provided full metadata
+        self._cleanup_fetchers()
+        if hasattr(self, "_refetch_timer"):
+            self._refetch_timer.stop()
 
     def _load_thumb(self, it: Dict):
         url = it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get("url")
@@ -211,60 +206,36 @@ class Step3QualityWidget(QWidget):
             self.cmb_quality.addItems(opts)
 
     def _start_refetch_missing(self):
+        # disabled background refetching
         self._cleanup_fetchers()
-        if not getattr(self.settings.ui, "background_metadata_enabled", True):
-            return
-        for it in self.items:
-            if self._has_formats(it):
-                continue
-            url = it.get("webpage_url") or it.get("url")
-            if not url:
-                continue
-            f = InfoFetcher(url)
-
-            def _ok(meta, url=url):
-                idx = self._url_index.get(url, -1)
-                if idx >= 0 and isinstance(meta, dict):
-                    self.items[idx] = {**self.items[idx], **meta}
-                    title = self.items[idx].get("title") or "Untitled"
-                    lw = self.preview.item(idx)
-                    if lw:
-                        lw.setText(title)
-                        # Update icon when thumbnail becomes available
-                        pix = self._load_thumb(self.items[idx])
-                        if pix:
-                            lw.setIcon(QIcon(pix))
-                    self._populate_quality_options()
-
-            def _fail(err):
-                pass
-
-            f.finished_ok.connect(_ok)
-            f.finished_fail.connect(_fail)
-            self._meta_fetchers.append(f)
-            f.start()
+        return
 
     def _cleanup_fetchers(self):
         for f in self._meta_fetchers:
             try:
-                if f.isRunning():
-                    f.terminate()
-                    f.wait(300)
+                f.finished_ok.disconnect()
+            except Exception:
+                pass
+            try:
+                f.finished_fail.disconnect()
             except Exception:
                 pass
         self._meta_fetchers.clear()
 
     def _confirm(self):
-        # Cancel any refetch still in flight when proceeding
-        self._refetch_timer.stop()
+        if hasattr(self, "_refetch_timer"):
+            self._refetch_timer.stop()
         self._cleanup_fetchers()
         kind = "audio" if self.rad_audio.isChecked() else "video"
         fmt = self.cmb_format.currentText().strip()
         quality = self.cmb_quality.currentText().strip() or "best"
-        # Remember last choice automatically
         self.settings.defaults.kind = kind
         self.settings.defaults.format = fmt
         SettingsManager().save(self.settings)
+        self.qualityConfirmed.emit(
+            {"items": self.items, "kind": kind, "format": fmt, "quality": quality}
+        )
+        # FIX: emit once
         self.qualityConfirmed.emit(
             {"items": self.items, "kind": kind, "format": fmt, "quality": quality}
         )

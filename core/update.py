@@ -7,14 +7,13 @@ from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-# Paths shared with yt_manager
 if getattr(sys, "frozen", False):
     ROOT_DIR = os.path.dirname(sys.executable)
 else:
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 YTDLP_DIR = os.path.join(ROOT_DIR, "yt-dlp-bin")
 YTDLP_EXE = os.path.join(YTDLP_DIR, "yt-dlp.exe")
-STAGING_DIR = os.path.join(ROOT_DIR, "_update_staging")  # NEW
+STAGING_DIR = os.path.join(ROOT_DIR, "_update_staging")
 
 
 def get_latest_release_info(branch: str) -> dict:
@@ -137,12 +136,12 @@ class YtDlpUpdateWorker(QThread):
 class AppUpdateWorker(QThread):
     status = pyqtSignal(str)
     updated = pyqtSignal(bool)
-    available = pyqtSignal(str, str)  # NEW: remote_ver, local_ver
+    available = pyqtSignal(str, str)
 
     def __init__(self, repo: str, channel: str, current_version: str, do_update: bool):
         super().__init__()
         self.repo = repo
-        self.channel = (channel or "release").lower()  # release|prerelease|nightly
+        self.channel = (channel or "release").lower()
         self.current_version = current_version
         self.do_update = do_update
 
@@ -251,7 +250,6 @@ class AppUpdateWorker(QThread):
                 self.status.emit("No releases found.")
                 self.updated.emit(False)
                 return
-            # Prefer the release title for nightly to match "Nightly Build {sha}"
             if self.channel == "nightly":
                 tag = rel.get("name") or rel.get("tag_name") or ""
             else:
@@ -323,28 +321,3 @@ class AppUpdateWorker(QThread):
         except Exception as e:
             self.status.emit(f"App update failed: {e}")
             self.updated.emit(False)
-
-
-if __name__ == "__main__":
-    # Simulate checking for nightly update
-    worker = AppUpdateWorker(
-        repo="noneeeeeeeeeee/YoutubeConverter",
-        channel="nightly",
-        current_version="Nightly Build 9b42477",
-        do_update=False,
-    )
-    rel = worker._get_release_json()
-    print("Fetched release JSON for nightly:")
-    if rel:
-        remote_ver = rel.get("name") or rel.get("tag_name") or ""
-        local_ver = worker._local_version()
-        print(f"Local version: {local_ver}")
-        print(f"Remote version (nightly): {remote_ver}")
-        print("Update available:", remote_ver != local_ver)
-    else:
-        print("No nightly release found.")
-        local_ver = worker._local_version()
-        remote_ver = ""
-        print(f"Local version: {local_ver}")
-        print(f"Remote version (nightly): {remote_ver}")
-        print("Update available:", False)

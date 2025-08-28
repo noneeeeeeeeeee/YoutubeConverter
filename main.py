@@ -17,31 +17,31 @@ from PyQt6.QtWidgets import (
 
 
 def _app_dir() -> str:
-    # Prefer the executable directory when frozen
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 
-# CHANGED: also import SETTINGS_DIR for user-writable path
-from core.settings import SettingsManager, AppSettings, SETTINGS_DIR
-
-
-# NEW: central logs directory (per-user, writable) with fallback to app dir
+# Prefer a user-writable logs directory; try SETTINGS_DIR if available, else APPDATA, else app dir
 def _log_dir() -> str:
-    primary = os.path.join(SETTINGS_DIR, "logs")
     try:
-        os.makedirs(primary, exist_ok=True)
-        return primary
+        d = None
+        if "SETTINGS_DIR" in globals() and isinstance(
+            globals().get("SETTINGS_DIR"), str
+        ):
+            d = os.path.join(globals()["SETTINGS_DIR"], "logs")
+        if not d:
+            appdata = os.getenv("APPDATA") or os.path.expanduser("~")
+            d = os.path.join(appdata, "YoutubeConverter", "logs")
+        os.makedirs(d, exist_ok=True)
+        return d
     except Exception:
-        pass
-    fallback = os.path.join(_app_dir(), "logs")
-    try:
-        os.makedirs(fallback, exist_ok=True)
+        fallback = os.path.join(_app_dir(), "logs")
+        try:
+            os.makedirs(fallback, exist_ok=True)
+        except Exception:
+            pass
         return fallback
-    except Exception:
-        pass
-    return _app_dir()  # last resort
 
 
 # NEW: helper to write both timestamped and rolling logs, returns the timestamped path
@@ -58,7 +58,7 @@ def _write_crash_log(exctype, value, tb_text: str) -> str | None:
             try:
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(line1)
-                    f.write(tb_text.rstrip() + "\n")
+                    f.write((tb_text or "").rstrip() + "\n")
             except Exception:
                 pass
         return ts_path
@@ -73,8 +73,7 @@ def _install_exception_handler():
             import traceback
 
             msg = "".join(traceback.format_exception(exctype, value, tb))
-            log_path = _write_crash_log(exctype, value, msg)  # CHANGED
-            # Try to show a dialog (create a minimal app if needed)
+            log_path = _write_crash_log(exctype, value, msg)
             try:
                 from PyQt6.QtWidgets import QMessageBox
 
@@ -82,24 +81,18 @@ def _install_exception_handler():
                 box = QMessageBox()
                 box.setIcon(QMessageBox.Icon.Critical)
                 box.setWindowTitle("Unexpected Error")
-                # Short summary in the main text
                 summary = f"{getattr(exctype, '__name__', str(exctype))}: {value}"
-                if log_path:
-                    box.setText(f"{summary}\n\nA log was saved to:\n{log_path}")
-                else:
-                    box.setText(summary)
-                # Full stack trace in expandable details
+                box.setText(f"{summary}\n\nLog: {log_path}" if log_path else summary)
                 box.setDetailedText(msg)
+
                 box.exec()
             except Exception:
                 pass
         finally:
-            # Do not forcibly exit; let Qt/Python continue if possible
             sys.__excepthook__(exctype, value, tb)
 
     sys.excepthook = _hook
 
-    # NEW: capture unhandled exceptions in background threads (Python 3.8+)
     try:
         import threading, traceback
 
@@ -150,38 +143,44 @@ def _install_exception_handler():
                 ctx = ""
             text = f"{level}: {message}\n{ctx}".strip()
             _write_crash_log("QtMessage", level, text)
-            if msg_type == QtMsgType.QtFatalMsg:
-                try:
-                    from PyQt6.QtWidgets import QMessageBox
-
-                    box = QMessageBox()
-                    box.setIcon(QMessageBox.Icon.Critical)
-                    box.setWindowTitle("Fatal Qt Error")
-                    box.setText(text)
-                    box.exec()
-                except Exception:
-                    pass
 
         qInstallMessageHandler(_qt_msg_handler)
     except Exception as e:
         _write_crash_log("QtMsgInstallError", e, "Failed to install Qt message handler")
 
 
+# Redirect stdout/stderr to logs in GUI onefile builds (no console)
+class _LogStream:
+    def write(self, s: str):
+        if not s:
+            return
+        try:
+            with open(
+                os.path.join(_log_dir(), "error.log"), "a", encoding="utf-8"
+            ) as f:
+                f.write(s)
+        except Exception:
+            pass
+
+    def flush(self):
+        pass
+
+
 _install_exception_handler()
 _ = _log_dir()
+if getattr(sys, "frozen", False):
+    try:
+        sys.stderr = _LogStream()
+        sys.stdout = _LogStream()
+    except Exception:
+        pass
 
-try:
-    import certifi
+# CHANGED: also import SETTINGS_DIR for user-writable path
+from core.settings import SettingsManager, AppSettings, SETTINGS_DIR
 
-    local_ca = os.path.join(_app_dir(), "cacert.pem")
-    ca_path = local_ca if os.path.isfile(local_ca) else certifi.where()
-    os.environ.setdefault("SSL_CERT_FILE", ca_path)
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_path)
-except Exception:
-    pass
 
 from core.ffmpeg_manager import FfmpegInstaller, ensure_ffmpeg_in_path
-from core.update import YtDlpUpdateWorker, AppUpdateWorker  # CHANGED: moved here
+from core.update import YtDlpUpdateWorker, AppUpdateWorker
 from core.yt_manager import InfoFetcher  # kept
 from ui.style import StyleManager
 from ui.stepper import Stepper
@@ -205,6 +204,30 @@ def _read_version_from_file() -> str:
 
 APP_VERSION = _read_version_from_file() or "Unknown"
 APP_REPO = "noneeeeeeeeeee/YoutubeConverter"
+
+
+# Safe QApplication subclass to catch exceptions raised in Qt event handlers
+class CrashSafeApplication(QApplication):
+    def notify(self, receiver, event):
+        try:
+            return super().notify(receiver, event)
+        except Exception as e:
+            import traceback
+
+            msg = traceback.format_exc()
+            _write_crash_log(type(e), e, msg)
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+
+                box = QMessageBox()
+                box.setIcon(QMessageBox.Icon.Critical)
+                box.setWindowTitle("Unexpected Error")
+                box.setText(str(e))
+                box.setDetailedText(msg)
+                box.exec()
+            except Exception:
+                pass
+            return False
 
 
 class MainWindow(QMainWindow):
@@ -314,8 +337,8 @@ class MainWindow(QMainWindow):
         self.settings_scroll.setObjectName("SettingsScrollArea")
         self.settings_scroll.setWidget(self.settings_page)
         # Flatten look: remove border/frame, keep scrollbar
-        self.settings_scroll.setFrameShape(QFrame.Shape.NoFrame)  # NEW
-        self.settings_scroll.setStyleSheet(  # NEW
+        self.settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.settings_scroll.setStyleSheet(
             "QScrollArea { border: none; background: transparent; }"
             "QScrollArea > QWidget > QWidget { background: transparent; }"
         )
@@ -347,10 +370,9 @@ class MainWindow(QMainWindow):
         )
 
         # Settings page signals (connect on inner widget)
-        self.settings_page.changed.connect(self._settings_changed)  # NEW
-        self.settings_page.accentPickRequested.connect(self._pick_accent)  # NEW
-        self.settings_page.checkYtDlpRequested.connect(self._check_ytdlp_updates)  # NEW
-        # CHANGED: when user clicks "Check app update", check-only but prompt on availability
+        self.settings_page.changed.connect(self._settings_changed)
+        self.settings_page.accentPickRequested.connect(self._pick_accent)
+        self.settings_page.checkYtDlpRequested.connect(self._check_ytdlp_updates)
         self.settings_page.checkAppCheckOnlyRequested.connect(
             lambda: self._check_app_updates(check_only=True, prompt_on_available=True)
         )
@@ -397,7 +419,27 @@ class MainWindow(QMainWindow):
             self._bg_fetcher.start()
             return
 
-        # Normal path: go to Step 2 for quality selection
+        url = payload.get("url") or info.get("webpage_url") or info.get("url")
+        if url and not info.get("formats"):
+            self.toast.show("Fetching video info...")
+            self._bg_fetcher = InfoFetcher(url)
+
+            def _ok(meta):
+                self.step3.set_items([meta])
+                self.flow_stack.setCurrentIndex(1)
+                self.stepper.set_current(1)
+
+            def _fail(_err):
+                self.step3.set_items([info])
+                self.flow_stack.setCurrentIndex(1)
+                self.stepper.set_current(1)
+
+            self._bg_fetcher.finished_ok.connect(_ok)
+            self._bg_fetcher.finished_fail.connect(_fail)
+            self._bg_fetcher.start()
+            return
+
+        # Existing path when formats are already present
         self.step3.set_items([info])
         self.flow_stack.setCurrentIndex(1)
         self.stepper.set_current(1)
@@ -410,7 +452,6 @@ class MainWindow(QMainWindow):
         self.stepper.set_current(1)
 
     def _advance_from_step3(self, selection: Dict):
-        # selection: {"items": [...], "kind": "audio"/"video", "format": "...", "quality": "..."
         items = selection.get("items", [])
         if not items:
             return
@@ -419,15 +460,14 @@ class MainWindow(QMainWindow):
         self.stepper.set_current(2)
 
     def _on_downloads_finished(self):
-        # Always clear Step 1 contents after downloads
+        # Always reset the app to a clean state after downloads
         self.step1.reset()
-        if self.settings.ui.reset_after_downloads:
-            # Reset to step 1
-            self.flow_stack.setCurrentIndex(0)
-            self.stepper.set_current(0)
-        else:
-            # Stay on downloads page; Step 1 is already cleared
+        try:
+            self.step4.reset()
+        except Exception:
             pass
+        self.flow_stack.setCurrentIndex(0)
+        self.stepper.set_current(0)
 
     def _pick_accent(self):
         from PyQt6.QtWidgets import QColorDialog
@@ -608,8 +648,7 @@ class MainWindow(QMainWindow):
 
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-    app = QApplication(sys.argv)
+    app = CrashSafeApplication(sys.argv)  # use crash-safe app
     try:
         if hasattr(Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
             app.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)

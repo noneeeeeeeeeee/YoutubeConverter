@@ -19,13 +19,13 @@ class SettingsPage(QWidget):
     checkYtDlpRequested = pyqtSignal()
     checkAppCheckOnlyRequested = pyqtSignal()
     accentPickRequested = pyqtSignal()
-    resetDefaultsRequested = pyqtSignal()  # NEW
+    resetDefaultsRequested = pyqtSignal()
 
     def __init__(self, settings: AppSettings):
         super().__init__()
         self._settings = settings
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setContentsMargins(16, 16, 4, 16)
 
         # Note
         grp_note = QGroupBox("Note")
@@ -47,18 +47,6 @@ class SettingsPage(QWidget):
         grp_general = QGroupBox("General")
         frm_general = QFormLayout(grp_general)
         frm_general.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.chk_fast_paste = QCheckBox()
-        self.chk_fast_paste.setChecked(getattr(settings.ui, "fast_paste_enabled", True))
-        frm_general.addRow(
-            "Fast paste (URL adds/advances instantly)", self.chk_fast_paste
-        )
-
-        self.chk_bg_meta = QCheckBox()  # NEW
-        self.chk_bg_meta.setChecked(
-            getattr(settings.ui, "background_metadata_enabled", True)
-        )
-        frm_general.addRow("Background metadata fetching", self.chk_bg_meta)  # NEW
 
         self.chk_clear_after_fetch = QCheckBox()
         self.chk_clear_after_fetch.setChecked(settings.ui.clear_input_after_fetch)
@@ -150,21 +138,18 @@ class SettingsPage(QWidget):
 
         # Change handlers
         for w in (
-            self.chk_fast_paste,
-            self.chk_bg_meta,  # NEW
             self.chk_clear_after_fetch,
             self.chk_auto_search_text,
             self.chk_live_search,
             self.chk_ytdlp_auto,
             self.chk_app_auto,
-            self.chk_app_check_prompt,  # NEW
+            self.chk_app_check_prompt,
         ):
             w.toggled.connect(self.changed.emit)
         self.spn_search_debounce.valueChanged.connect(self.changed.emit)
         self.cmb_ytdlp_branch.currentTextChanged.connect(self.changed.emit)
         self.cmb_app_channel.currentTextChanged.connect(self.changed.emit)
 
-        # NEW: enforce mutual exclusivity between auto-update and check-on-launch
         self.chk_app_auto.toggled.connect(self._on_auto_update_toggled)
         self.chk_app_check_prompt.toggled.connect(self._on_check_prompt_toggled)
 
@@ -197,6 +182,19 @@ class SettingsPage(QWidget):
         self.changed.emit()
 
     def apply_to(self, settings: AppSettings):
+        settings.ui.fast_paste_enabled = False
+        settings.ui.background_metadata_enabled = False
+        settings.ui.clear_input_after_fetch = self.chk_clear_after_fetch.isChecked()
+        settings.ui.auto_search_text = self.chk_auto_search_text.isChecked()
+        settings.ui.live_search = self.chk_live_search.isChecked()
+        settings.ui.search_debounce_seconds = int(self.spn_search_debounce.value())
+        settings.ytdlp.auto_update = self.chk_ytdlp_auto.isChecked()
+        settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
+        settings.app.auto_update = self.chk_app_auto.isChecked()
+        settings.app.channel = self.cmb_app_channel.currentText()
+        settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()
+        settings.app.channel = self.cmb_app_channel.currentText()
+        settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()
         settings.ui.fast_paste_enabled = self.chk_fast_paste.isChecked()
         settings.ui.background_metadata_enabled = self.chk_bg_meta.isChecked()
         settings.ui.clear_input_after_fetch = self.chk_clear_after_fetch.isChecked()
@@ -207,4 +205,4 @@ class SettingsPage(QWidget):
         settings.ytdlp.branch = self.cmb_ytdlp_branch.currentText()
         settings.app.auto_update = self.chk_app_auto.isChecked()
         settings.app.channel = self.cmb_app_channel.currentText()
-        settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()  # NEW
+        settings.app.check_on_launch = self.chk_app_check_prompt.isChecked()

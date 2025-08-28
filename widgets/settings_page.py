@@ -13,8 +13,6 @@ from PyQt6.QtWidgets import (
 )
 from core.settings import AppSettings
 
-# Test
-
 
 class SettingsPage(QWidget):
     changed = pyqtSignal()

@@ -13,11 +13,11 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QFrame,
     QScrollArea,
-    QProgressDialog,  # NEW
+    QProgressDialog,
     QDialog,
     QDialogButtonBox,
     QTextBrowser,
-    QLabel,  # ADDED
+    QLabel,
 )
 
 
@@ -113,7 +113,6 @@ def _install_exception_handler():
     except Exception:
         pass
 
-    # NEW: capture unraisable exceptions (e.g., in __del__)
     try:
         import traceback
 
@@ -241,7 +240,6 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 640)
         self.settings_mgr = SettingsManager()
         self.settings: AppSettings = self.settings_mgr.load()
-        # NEW: migrate settings to latest shape
         self._migrate_settings()
 
         self.style_mgr = StyleManager(self.settings.ui.accent_color_hex)
@@ -251,7 +249,6 @@ class MainWindow(QMainWindow):
         # Track dependency state
         self._deps_installing_ff = False
         self._deps_installing_ytdlp = False
-        # NEW: init dialog and op counter
         self._init_dialog: QProgressDialog | None = None
         self._init_ops = 0
 
@@ -357,9 +354,7 @@ class MainWindow(QMainWindow):
         )
 
         self.stack.addWidget(self.page_flow)
-        self.stack.addWidget(
-            self.settings_scroll
-        )  # add scroll area instead of raw page
+        self.stack.addWidget(self.settings_scroll)
 
     def _wire_signals(self):
         self.btn_home.clicked.connect(lambda: self.stack.setCurrentIndex(0))
@@ -555,20 +550,20 @@ class MainWindow(QMainWindow):
             self.step1.set_next_enabled(False, "Installing FFmpeg...")
         except Exception:
             pass
-        self._begin_init("Installing FFmpeg...")  # NEW
+        self._begin_init("Installing FFmpeg...")
         self._toast("FFmpeg not found. Downloading...")
         self.ff_thread = FfmpegInstaller(self)
         self.ff_thread.progress.connect(
             lambda p: (
                 self._toast(f"Downloading FFmpeg... {p}%"),
                 self._update_init(f"Downloading FFmpeg... {p}%"),
-            )  # NEW
+            )
         )
 
         def _ff_ok(_path: str):
             self._deps_installing_ff = False
             self._toast("FFmpeg ready")
-            self._end_init()  # NEW
+            self._end_init()
             try:
                 self.step1.set_next_enabled(True, "")
             except Exception:
@@ -577,7 +572,7 @@ class MainWindow(QMainWindow):
         def _ff_fail(err: str):
             self._deps_installing_ff = False
             self._toast(f"FFmpeg install failed: {err}")
-            self._end_init()  # NEW
+            self._end_init()
 
         self.ff_thread.finished_ok.connect(_ff_ok)
         self.ff_thread.finished_fail.connect(_ff_fail)
@@ -594,7 +589,7 @@ class MainWindow(QMainWindow):
             self.step1.set_next_enabled(False, "Installing yt-dlp...")
         except Exception:
             pass
-        self._begin_init("Installing yt-dlp...")  # NEW
+        self._begin_init("Installing yt-dlp...")
         self._toast("Installing yt-dlp...")
         self.yt_thread = YtDlpUpdateWorker(
             branch=self.settings.ytdlp.branch, check_only=False
@@ -602,7 +597,7 @@ class MainWindow(QMainWindow):
 
         def _status(msg: str):
             self._toast(msg)
-            self._update_init(msg)  # NEW
+            self._update_init(msg)
 
         def _after():
             # This worker only emits status; verify presence and re-enable Next
@@ -614,7 +609,7 @@ class MainWindow(QMainWindow):
                 ready = os.path.exists(YTDLP_EXE)
             except Exception:
                 pass
-            self._end_init()  # NEW
+            self._end_init()
             try:
                 self.step1.set_next_enabled(
                     bool(ready), "" if ready else "yt-dlp install failed"
@@ -628,7 +623,7 @@ class MainWindow(QMainWindow):
 
     def _check_ytdlp_updates(self, startup: bool = False):
         if startup:
-            self._begin_init("Checking for yt-dlp updates...")  # NEW
+            self._begin_init("Checking for yt-dlp updates...")
         self._toast("Checking for yt-dlp updates...")
         self.yt_thread = YtDlpUpdateWorker(self.settings.ytdlp.branch, check_only=True)
         self.yt_thread.status.connect(
@@ -800,7 +795,6 @@ class MainWindow(QMainWindow):
         is_playlist = len(self.stepper._labels) == 4
         self.stepper.set_current(2 if is_playlist else 1)
 
-    # NEW: only show toasts when window is active (avoid always-on-top feel)
     def _toast(self, msg: str):
         try:
             if self.isMinimized() or not self.isActiveWindow():
@@ -809,7 +803,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # NEW: migrate old settings to new schema safely
     def _migrate_settings(self):
         try:
             ui = self.settings.ui
@@ -823,7 +816,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # NEW: initialization modal progress dialog helpers
     def _begin_init(self, msg: str):
         try:
             self._init_ops += 1

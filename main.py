@@ -758,7 +758,6 @@ class MainWindow(QMainWindow):
                         f"Start-Process -FilePath '{exe}'\""
                     )
                     try:
-                        # Spawn updater and exit current app
                         import subprocess
 
                         subprocess.Popen(
@@ -872,12 +871,6 @@ def main():
     except Exception:
         pass
     win = MainWindow()
-    win.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
     win.show()
     sys.exit(app.exec())
 

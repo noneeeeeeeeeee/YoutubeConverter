@@ -3,9 +3,11 @@ import sys
 import subprocess
 import requests
 import zipfile
+import time
+import logging
 from typing import Optional
-
 from PyQt6.QtCore import QThread, pyqtSignal
+
 
 if getattr(sys, "frozen", False):
     ROOT_DIR = os.path.dirname(sys.executable)
@@ -40,7 +42,7 @@ def get_latest_release_info(branch: str) -> dict:
     return {"repo": repo, "api": api, "download_url": dl, "tag": tag}
 
 
-def _hidden_subprocess_kwargs():  # NEW
+def _hidden_subprocess_kwargs():
     kwargs = {}
     if os.name == "nt":
         si = subprocess.STARTUPINFO()
@@ -137,6 +139,7 @@ class AppUpdateWorker(QThread):
     status = pyqtSignal(str)
     updated = pyqtSignal(bool)
     available = pyqtSignal(str, str)
+    availableDetails = pyqtSignal(str, str, str)
 
     def __init__(self, repo: str, channel: str, current_version: str, do_update: bool):
         super().__init__()
@@ -161,46 +164,73 @@ class AppUpdateWorker(QThread):
             "Accept": "application/vnd.github+json",
             "User-Agent": "YoutubeConverter-Updater",
         }
-        try:
-            if self.channel == "nightly":
-                # Try dedicated endpoint for a release by tag
-                url = f"{base}/tags/nightly"
+
+        def _get(url: str):
+            try:
                 r = requests.get(url, headers=headers, timeout=20)
-                if r.status_code == 404:
-                    # Fallback: list releases and pick tag_name == nightly
-                    rl = requests.get(base, headers=headers, timeout=20)
-                    rl.raise_for_status()
-                    releases = rl.json() or []
-                    return next(
-                        (
-                            x
-                            for x in releases
-                            if (x.get("tag_name") or "").lower() == "nightly"
-                        ),
-                        None,
-                    )
+                if r.status_code == 403:
+                    self.status.emit(f"GitHub API rate limited (403) for {url}")
+                elif r.status_code == 404:
+                    self.status.emit(f"Not found (404) for {url}")
                 r.raise_for_status()
                 return r.json()
-            # Non-nightly channels
-            r = requests.get(base, headers=headers, timeout=20)
-            r.raise_for_status()
-            releases = r.json() or []
+            except requests.exceptions.RequestException as e:
+                self.status.emit(f"GitHub API error: {e}")
+                return None
+
+        if self.channel == "nightly":
+            rel = _get(f"{base}/tags/nightly")
+            if rel:
+                return rel
+            tags = (
+                _get(f"https://api.github.com/repos/{self.repo}/tags?per_page=100")
+                or []
+            )
+            tag = next(
+                (t for t in tags if (t.get("name") or "").lower() == "nightly"), None
+            )
+            if not tag:
+                return None
+            rel = _get(f"{base}/tags/{tag.get('name')}")
+            return rel or {"tag_name": tag.get("name"), "assets": []}
+
+        rels = _get(base) or []
+        if rels:
             if self.channel == "release":
-                return next((x for x in releases if not x.get("prerelease")), None)
+                rel = next((x for x in rels if not x.get("prerelease")), None)
+                if rel:
+                    return rel
             elif self.channel == "prerelease":
-                return next(
+                rel = next(
                     (
                         x
-                        for x in releases
+                        for x in rels
                         if x.get("prerelease")
                         and (x.get("tag_name") or "").lower() != "nightly"
                     ),
                     None,
-                ) or next((x for x in releases if x.get("prerelease")), None)
+                ) or next((x for x in rels if x.get("prerelease")), None)
+                if rel:
+                    return rel
             else:
-                return releases[0] if releases else None
-        except Exception:
+                return rels[0]
+
+        tags = _get(f"https://api.github.com/repos/{self.repo}/tags?per_page=100") or []
+        if not tags:
             return None
+        if self.channel == "release":
+            ver = next(
+                (t for t in tags if (t.get("name") or "").lower().startswith("v")), None
+            )
+            chosen = ver or tags[0]
+        elif self.channel == "prerelease":
+            chosen = next(
+                (t for t in tags if (t.get("name") or "").lower() != "nightly"), tags[0]
+            )
+        else:
+            chosen = tags[0]
+        rel = _get(f"{base}/tags/{chosen.get('name')}")
+        return rel or {"tag_name": chosen.get("name"), "assets": []}
 
     def _pick_zip_asset(self, rel: dict) -> Optional[dict]:
         assets = rel.get("assets") or []
@@ -229,12 +259,6 @@ class AppUpdateWorker(QThread):
 
     @staticmethod
     def _normalize_version(v: str) -> str:
-        """
-        Normalize version strings for comparison:
-        - Trim whitespace
-        - Drop leading 'v' (common in tags) when followed by a digit
-        - Lower-case for stability
-        """
         if not v:
             return ""
         s = v.strip()
@@ -244,10 +268,10 @@ class AppUpdateWorker(QThread):
 
     def run(self):
         try:
-            self.status.emit("Checking app updates...")
+            self.status.emit(f"Checking app updates from {self.repo}...")
             rel = self._get_release_json()
             if not rel:
-                self.status.emit("No releases found.")
+                self.status.emit(f"No releases found for {self.repo} [{self.channel}].")
                 self.updated.emit(False)
                 return
             if self.channel == "nightly":
@@ -272,14 +296,58 @@ class AppUpdateWorker(QThread):
                     self.status.emit(
                         f"Update available {raw_local_ver or local_ver} -> {raw_remote_ver or remote_ver} [{self.channel}]"
                     )
-                    self.available.emit(
-                        raw_remote_ver or remote_ver, raw_local_ver or local_ver
-                    )  # NEW
+                    body_md = rel.get("body") or ""
+                    # Emit only one detailed signal to prevent duplicate prompts
+                    self.availableDetails.emit(
+                        raw_remote_ver or remote_ver,
+                        raw_local_ver or local_ver,
+                        body_md,
+                    )
                 else:
                     self.status.emit(f"Update check complete [{self.channel}]")
                 self.updated.emit(False)
                 return
             asset = self._pick_zip_asset(rel)
+            if not asset:
+                self.status.emit("No zip asset found in release.")
+                self.updated.emit(False)
+                return
+
+            url = asset.get("browser_download_url")
+            name = asset.get("name") or "update.zip"
+            self.status.emit(f"Downloading {name}...")
+            os.makedirs(STAGING_DIR, exist_ok=True)
+            tmp_zip = os.path.join(STAGING_DIR, "_update_tmp.zip")
+            with requests.get(url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(tmp_zip, "wb") as f:
+                    for chunk in r.iter_content(256 * 1024):
+                        if chunk:
+                            f.write(chunk)
+
+            self.status.emit("Preparing update...")
+            for root, dirs, files in os.walk(STAGING_DIR):
+                for fn in files:
+                    if fn != "_update_tmp.zip":
+                        try:
+                            os.remove(os.path.join(root, fn))
+                        except Exception:
+                            pass
+            self._extract_zip_flat(tmp_zip, STAGING_DIR)
+            try:
+                os.remove(tmp_zip)
+            except Exception:
+                pass
+            try:
+                with open(os.path.join(STAGING_DIR, ".pending"), "w") as f:
+                    f.write(remote_ver or "")
+            except Exception:
+                pass
+            self.status.emit("Update ready. It will be applied on restart.")
+            self.updated.emit(True)
+        except Exception as e:
+            self.status.emit(f"App update failed: {e}")
+            self.updated.emit(False)
             if not asset:
                 self.status.emit("No zip asset found in release.")
                 self.updated.emit(False)
@@ -321,3 +389,69 @@ class AppUpdateWorker(QThread):
         except Exception as e:
             self.status.emit(f"App update failed: {e}")
             self.updated.emit(False)
+
+
+if __name__ == "__main__":
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    logger = logging.getLogger("update_debugger")
+
+    def status_callback(message):
+        logger.info(message)
+        print(message)
+
+    def available_callback(remote_ver, local_ver):
+        logger.info(f"Update available: {local_ver} -> {remote_ver}")
+        print(f"Update available: {local_ver} -> {remote_ver}")
+
+    # Test YT-DLP updater
+    logger.info("Testing YT-DLP updater...")
+    ytdlp_worker = YtDlpUpdateWorker(branch="stable", check_only=True)
+    ytdlp_worker.status.connect(status_callback)
+    ytdlp_worker.start()
+    ytdlp_worker.wait()
+    logger.info("Testing App update check...")
+    app_worker = AppUpdateWorker(
+        repo="noneeeeeeeeeee/YoutubeConverter",
+        channel="release",
+        current_version="0.0.0",
+        do_update=False,
+    )
+    app_worker.status.connect(status_callback)
+    app_worker.available.connect(available_callback)
+    app_worker.start()
+    app_worker.wait()
+    # Test if we're hitting rate limits
+    logger.info("Testing GitHub API rate limit...")
+    try:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "YoutubeConverter-Updater",
+        }
+        r = requests.get(
+            "https://api.github.com/rate_limit", headers=headers, timeout=10
+        )
+        r.raise_for_status()
+        rate_info = r.json()
+        core_limit = rate_info.get("resources", {}).get("core", {})
+        remaining = core_limit.get("remaining", 0)
+        reset_time = core_limit.get("reset", 0)
+        reset_datetime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(reset_time))
+        logger.info(
+            f"GitHub API Rate Limit: {remaining} requests remaining, resets at {reset_datetime}"
+        )
+        print(
+            f"GitHub API Rate Limit: {remaining} requests remaining, resets at {reset_datetime}"
+        )
+        if remaining < 10:
+            logger.warning("GitHub API rate limit is low!")
+            print("WARNING: GitHub API rate limit is low!")
+    except Exception as e:
+        logger.error(f"Failed to check rate limit: {e}")
+        print(f"ERROR: Failed to check rate limit: {e}")
+    except Exception as e:
+        logger.error(f"Failed to check rate limit: {e}")
+        print(f"ERROR: Failed to check rate limit: {e}")

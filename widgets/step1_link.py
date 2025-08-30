@@ -211,14 +211,29 @@ class Step1LinkWidget(QWidget):
         for it in self.selected:
             title = it.get("title") or "Untitled"
             lw = QListWidgetItem(title)
+            # Async thumb fetch to avoid blocking UI
+            url = (it or {}).get("webpage_url") or (it or {}).get("url")
             thumb = (
-                it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get("url")
+                (it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get("url"))
                 if isinstance(it, dict)
                 else None
             )
-            pix = self._load_thumb(thumb)
-            if pix:
-                lw.setIcon(QIcon(pix))
+            if thumb:
+                worker = Step1LinkWidget._ThumbWorker(-1, thumb, self)
+                worker.done.connect(
+                    lambda _row, px, _thumb_url, vurl=url: self._set_selected_icon_for_url(
+                        vurl, px
+                    )
+                )
+                worker.finished.connect(
+                    lambda w=worker: (
+                        self._thumb_threads.remove(w)
+                        if w in self._thumb_threads
+                        else None
+                    )
+                )
+                self._thumb_threads.append(worker)
+                worker.start()
             lw.setData(Qt.ItemDataRole.UserRole, it)
             self.selected_list.addItem(lw)
         self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
@@ -411,12 +426,9 @@ class Step1LinkWidget(QWidget):
         self.fetcher = None
         self._set_busy(False)
 
-        # Clear input if requested (NEW: search-specific setting with legacy fallback)
+        # Clear input if requested (use unified setting only)
         try:
-            flag = getattr(self.settings.ui, "auto_clear_on_success", None)
-            if flag is None:
-                flag = bool(getattr(self.settings.ui, "clear_input_after_fetch", False))
-            if flag:
+            if bool(getattr(self.settings.ui, "auto_clear_on_success", False)):
                 self.txt.clear()
         except Exception:
             pass
@@ -483,12 +495,27 @@ class Step1LinkWidget(QWidget):
                 title = e.get("title") or "Untitled"
                 it = QListWidgetItem(title)
                 it.setData(Qt.ItemDataRole.UserRole, e)
-                pix = self._load_thumb(
-                    e.get("thumbnail") or (e.get("thumbnails") or [{}])[-1].get("url")
+                # Async thumb fetch to avoid blocking UI
+                thumb = e.get("thumbnail") or (e.get("thumbnails") or [{}])[-1].get(
+                    "url"
                 )
-                if pix:
-                    it.setIcon(QIcon(pix))
-                    it.setData(ICON_PIXMAP_ROLE, pix)
+                if thumb:
+                    vurl = (e.get("webpage_url") or e.get("url")) or ""
+                    worker = Step1LinkWidget._ThumbWorker(-1, thumb, self)
+                    worker.done.connect(
+                        lambda _row, px, _thumb_url, v=vurl: self._set_playlist_icon_for_url(
+                            v, px
+                        )
+                    )
+                    worker.finished.connect(
+                        lambda w=worker: (
+                            self._thumb_threads.remove(w)
+                            if w in self._thumb_threads
+                            else None
+                        )
+                    )
+                    self._thumb_threads.append(worker)
+                    worker.start()
                 self._style_playlist_item(it, self._is_selected(e))
                 self.playlist_list.addItem(it)
             self.tabs.setTabVisible(self.idx_playlist, True)
@@ -613,11 +640,16 @@ class Step1LinkWidget(QWidget):
         self.lbl_status.setText(
             f"Fetching metadata for {self._confirm_total} item(s)..."
         )
+        self.lbl_status.setText(f"Fetching metadata (0/{self._confirm_total})...")
 
         def _on_done_one():
             self._confirm_done += 1
             try:
                 self.loading_bar.setValue(self._confirm_done)
+                # Update "(n/total)" text
+                self.lbl_status.setText(
+                    f"Fetching metadata ({self._confirm_done}/{self._confirm_total})..."
+                )
             except Exception:
                 pass
             if self._confirm_done >= self._confirm_total:
@@ -625,6 +657,7 @@ class Step1LinkWidget(QWidget):
                 self._confirm_inflight = False
                 self._confirm_fetchers.clear()
                 self.lbl_status.setText("")
+                # Hide bar and re-enable UI
                 self.loading_bar.setVisible(False)
                 self.loading_bar.setRange(0, 0)
                 self._set_ui_enabled(True)
@@ -688,10 +721,6 @@ class Step1LinkWidget(QWidget):
         # No selection to clear; still ensure status/UI consistent
         self.lbl_status.setText("")
 
-    # Remove duplicate legacy handlers below to avoid conflicts
-    # (If duplicates exist later in file, delete them or ensure only this set remains.)
-    # ...existing code...
-
     # Toggle a playlist entry in/out of selection
     def _toggle_from_playlist(self, item: QListWidgetItem):
         info = item.data(Qt.ItemDataRole.UserRole) or {}
@@ -713,10 +742,18 @@ class Step1LinkWidget(QWidget):
                     if (it.get("webpage_url") or it.get("url")) != url
                 ]
                 self._refresh_selected_list()
-                self._style_playlist_item(item, False)
+                self._style_playlist_item(item, False)  # update styling
         else:
-            self.lbl_status.setText("Fetching info...")
-            self._start_fetch(url)
+            if self.chk_multi.isChecked():
+                # Multi: add placeholder and style as selected; do not fetch metadata now
+                self._upsert_selected(
+                    info if isinstance(info, dict) else {"url": url, "webpage_url": url}
+                )
+                self._style_playlist_item(item, True)
+                self.lbl_status.setText("Added to selected.")
+            else:
+                self.lbl_status.setText("Fetching info...")
+                self._start_fetch(url)
 
     def reset(self):
         # Cancel any in-flight fetch
@@ -780,6 +817,7 @@ class Step1LinkWidget(QWidget):
         if not self.selected:
             QMessageBox.information(self, "No videos", "No videos selected.")
             return
+        # Ensure all selected have metadata before emitting
         self._fetch_all_selected_then_emit()
 
     # ----- Thumbnail and Styling Helpers (ADDED) -----
@@ -833,69 +871,44 @@ class Step1LinkWidget(QWidget):
             pass
         self._thumb_threads.clear()
 
-    # Keep only one definition of this handler
-    def _remove_from_selected_prompt(self, item: QListWidgetItem):
-        info = item.data(Qt.ItemDataRole.UserRole) or {}
-        url = info.get("webpage_url") or info.get("url")
-        title = info.get("title") or "Untitled"
-        if not url:
-            return
-        if (
-            QMessageBox.question(
-                self, "Remove video", f"Remove '{title}' from selected?"
-            )
-            == QMessageBox.StandardButton.Yes
-        ):
-            self.selected = [
-                it
-                for it in self.selected
-                if (it.get("webpage_url") or it.get("url")) != url
-            ]
-            self._refresh_selected_list()
+    # NEW: set icon in playlist tab by video URL
+    def _set_playlist_icon_for_url(self, video_url: str, pix: QPixmap):
+        try:
             for i in range(self.playlist_list.count()):
-                pit = self.playlist_list.item(i)
-                pdata = pit.data(Qt.ItemDataRole.UserRole) or {}
-                pu = pdata.get("webpage_url") or pdata.get("url")
-                if pu == url:
-                    self._style_playlist_item(pit, False)
+                item = self.playlist_list.item(i)
+                data = item.data(Qt.ItemDataRole.UserRole) or {}
+                u = (data.get("webpage_url") or data.get("url")) or ""
+                if u == video_url:
+                    item.setIcon(QIcon(pix))
+                    item.setData(ICON_PIXMAP_ROLE, pix)
+                    # keep current selected/gray style
+                    self._apply_icon_style(item, self._is_selected(data))
                     break
-            self.tabs.setTabVisible(self.idx_selected, self.selected_list.count() > 0)
+        except Exception:
+            pass
 
-    # "Next" in multi-select mode: emit all selected infos
-    def _confirm_selection(self):
-        if not self.selected:
-            QMessageBox.information(self, "No videos", "No videos selected.")
-            return
-        # Ensure all selected have metadata before emitting
-        self._fetch_all_selected_then_emit()
+    # NEW: set icon in selected tab by video URL
+    def _set_selected_icon_for_url(self, video_url: str, pix: QPixmap):
+        try:
+            for i in range(self.selected_list.count()):
+                item = self.selected_list.item(i)
+                data = item.data(Qt.ItemDataRole.UserRole) or {}
+                u = (data.get("webpage_url") or data.get("url")) or ""
+                if u == video_url:
+                    item.setIcon(QIcon(pix))
+                    item.setData(ICON_PIXMAP_ROLE, pix)
+                    break
+        except Exception:
+            pass
 
-    def _toggle_from_results(self, item: QListWidgetItem):
-        data = item.data(Qt.ItemDataRole.UserRole) or {}
-        url = data.get("webpage_url") or data.get("url")
-        title = data.get("title") or "Unknown title"
-        if not url:
-            return
-        idx = next(
-            (
-                i
-                for i, it in enumerate(self.selected)
-                if (it.get("webpage_url") or it.get("url")) == url
-            ),
-            -1,
-        )
-        if idx >= 0:
-            if (
-                QMessageBox.question(
-                    self, "Remove video", f"Remove '{title}' from selected?"
-                )
-                == QMessageBox.StandardButton.Yes
-            ):
-                self.selected.pop(idx)
-                self._refresh_selected_list()
-            return
-        # Always fetch full metadata before proceeding (no background fetch)
-        self.lbl_status.setText("Fetching info...")
-        self._start_fetch(url)
+    # Allow MainWindow to enable/disable Next and optionally show a hint
+    def set_next_enabled(self, enabled: bool, note: str = ""):
+        try:
+            self.btn_next.setEnabled(enabled)
+            if note is not None:
+                self.lbl_status.setText(note)
+        except Exception:
+            pass
 
     # NEW: handler for the "Select all" checkbox in the playlist tab
     def _on_pl_select_all_toggled(self, checked: bool):
@@ -953,10 +966,13 @@ class Step1LinkWidget(QWidget):
         # Ensure all selected have metadata before emitting
         self._fetch_all_selected_then_emit()
 
-    # Show Next only when multi is enabled; confirm clear when disabling
-    def _on_multi_toggled(self, checked: bool):
-        self.btn_next.setVisible(checked)
-        if checked:
+    def set_next_enabled(self, enabled: bool, note: str = ""):
+        try:
+            self.btn_next.setEnabled(enabled)
+            if note is not None:
+                self.lbl_status.setText(note)
+        except Exception:
+            pass
             return
         if self.selected:
             res = QMessageBox.question(
@@ -1071,9 +1087,22 @@ class Step1LinkWidget(QWidget):
                 self.selected.pop(idx)
                 self._refresh_selected_list()
             return
-        # Always fetch full metadata before proceeding (no background fetch)
-        self.lbl_status.setText("Fetching info...")
-        self._start_fetch(url)
+        if self.chk_multi.isChecked():
+            # Multi: just add placeholder, do not fetch metadata now
+            self._upsert_selected(
+                {
+                    "title": title,
+                    "url": url,
+                    "webpage_url": url,
+                    "thumbnail": data.get("thumbnail"),
+                    "thumbnails": data.get("thumbnails"),
+                }
+            )
+            self.lbl_status.setText("Added to selected.")
+        else:
+            # Single: fetch metadata and proceed
+            self.lbl_status.setText("Fetching info...")
+            self._start_fetch(url)
 
     # NEW: handler for the "Select all" checkbox in the playlist tab
     def _on_pl_select_all_toggled(self, checked: bool):
@@ -1131,30 +1160,10 @@ class Step1LinkWidget(QWidget):
         # Ensure all selected have metadata before emitting
         self._fetch_all_selected_then_emit()
 
-    def _toggle_from_results(self, item: QListWidgetItem):
-        data = item.data(Qt.ItemDataRole.UserRole) or {}
-        url = data.get("webpage_url") or data.get("url")
-        title = data.get("title") or "Unknown title"
-        if not url:
-            return
-        idx = next(
-            (
-                i
-                for i, it in enumerate(self.selected)
-                if (it.get("webpage_url") or it.get("url")) == url
-            ),
-            -1,
-        )
-        if idx >= 0:
-            if (
-                QMessageBox.question(
-                    self, "Remove video", f"Remove '{title}' from selected?"
-                )
-                == QMessageBox.StandardButton.Yes
-            ):
-                self.selected.pop(idx)
-                self._refresh_selected_list()
-            return
-        # Always fetch full metadata before proceeding (no background fetch)
-        self.lbl_status.setText("Fetching info...")
-        self._start_fetch(url)
+    def set_next_enabled(self, enabled: bool, note: str = ""):
+        try:
+            self.btn_next.setEnabled(enabled)
+            if note is not None:
+                self.lbl_status.setText(note)
+        except Exception:
+            pass

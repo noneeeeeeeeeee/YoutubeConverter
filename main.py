@@ -13,6 +13,11 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QFrame,
     QScrollArea,
+    QProgressDialog,
+    QDialog,
+    QDialogButtonBox,
+    QTextBrowser,
+    QLabel,
 )
 
 
@@ -108,7 +113,6 @@ def _install_exception_handler():
     except Exception:
         pass
 
-    # NEW: capture unraisable exceptions (e.g., in __del__)
     try:
         import traceback
 
@@ -136,7 +140,6 @@ def _install_exception_handler():
                 QtMsgType.QtCriticalMsg: "QtCritical",
                 QtMsgType.QtFatalMsg: "QtFatal",
             }.get(msg_type, "QtLog")
-            # Include basic context if available
             try:
                 ctx = f"{getattr(context, 'file', '?')}:{getattr(context, 'line', 0)} ({getattr(context, 'function', '')})"
             except Exception:
@@ -237,12 +240,17 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 640)
         self.settings_mgr = SettingsManager()
         self.settings: AppSettings = self.settings_mgr.load()
-        # NEW: migrate settings to latest shape
         self._migrate_settings()
 
         self.style_mgr = StyleManager(self.settings.ui.accent_color_hex)
         self.setStyleSheet(self.style_mgr.qss())
         self.toast = ToastManager(self)
+
+        # Track dependency state
+        self._deps_installing_ff = False
+        self._deps_installing_ytdlp = False
+        self._init_dialog: QProgressDialog | None = None
+        self._init_ops = 0
 
         self.sidebar = self._build_sidebar()
         self.stepper = Stepper()
@@ -271,10 +279,11 @@ class MainWindow(QMainWindow):
 
         # FFmpeg ensure
         self._ensure_ffmpeg()
+        self._ensure_ytdlp()
 
         # yt-dlp auto update
         if self.settings.ytdlp.auto_update:
-            self._check_ytdlp_updates()
+            self._check_ytdlp_updates(startup=True)
 
         # App auto update on launch or check-and-prompt (mutually exclusive)
         if self.settings.app.auto_update:
@@ -282,10 +291,9 @@ class MainWindow(QMainWindow):
         elif getattr(self.settings.app, "check_on_launch", False):
             self._check_app_updates(check_only=True, prompt_on_available=True)
 
-        # Initialize steps display
         self._refresh_stepper_titles()
 
-        self._bg_fetcher = None  # background fetcher for fast-add on downloads
+        self._bg_fetcher = None
 
     def _build_sidebar(self) -> QWidget:
         side = QFrame()
@@ -346,9 +354,7 @@ class MainWindow(QMainWindow):
         )
 
         self.stack.addWidget(self.page_flow)
-        self.stack.addWidget(
-            self.settings_scroll
-        )  # add scroll area instead of raw page
+        self.stack.addWidget(self.settings_scroll)
 
     def _wire_signals(self):
         self.btn_home.clicked.connect(lambda: self.stack.setCurrentIndex(0))
@@ -388,6 +394,17 @@ class MainWindow(QMainWindow):
         self._refresh_stepper_titles()
 
     def _advance_single_from_step1(self, payload: Dict):
+        # Gate advancing until deps are ready
+        if not self._deps_ready():
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                "Please wait",
+                "Installing required tools (FFmpeg/yt-dlp). Try again when finished.",
+            )
+            return
+
         info = payload.get("info") or {}
         if not info:
             return
@@ -449,6 +466,16 @@ class MainWindow(QMainWindow):
     def _advance_multi_from_step1(self, items: List[Dict]):
         if not items:
             return
+        # Gate advancing until deps are ready
+        if not self._deps_ready():
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                "Please wait",
+                "Installing required tools (FFmpeg/yt-dlp). Try again when finished.",
+            )
+            return
         self.step3.set_items(items)
         self.flow_stack.setCurrentIndex(1)
         self.stepper.set_current(1)
@@ -487,77 +514,203 @@ class MainWindow(QMainWindow):
         self.settings_page.apply_to(self.settings)
         self.settings_mgr.save(self.settings)
 
+    # --- Dependencies gating ---
+    def _ffmpeg_ready(self) -> bool:
+        try:
+            import shutil
+            from core.ffmpeg_manager import FF_EXE
+
+            return os.path.exists(FF_EXE) or (shutil.which("ffmpeg") is not None)
+        except Exception:
+            return False
+
+    def _ytdlp_ready(self) -> bool:
+        try:
+            from core.update import YTDLP_EXE
+
+            return os.path.exists(YTDLP_EXE)
+        except Exception:
+            return False
+
+    def _deps_ready(self) -> bool:
+        return (
+            self._ffmpeg_ready()
+            and self._ytdlp_ready()
+            and not (self._deps_installing_ff or self._deps_installing_ytdlp)
+        )
+
     def _ensure_ffmpeg(self):
+        from core.ffmpeg_manager import FfmpegInstaller, ensure_ffmpeg_in_path
+
         ok = ensure_ffmpeg_in_path()
         if ok:
             return
-        self._toast("FFmpeg not found. Downloading...")  # CHANGED
-        self.ff_thread = FfmpegInstaller(self)
-        self.ff_thread.progress.connect(
-            lambda p: self._toast(f"Downloading FFmpeg... {p}%")
-        )  # CHANGED
-        self.ff_thread.finished_ok.connect(
-            lambda path: self._toast("FFmpeg ready")
-        )  # CHANGED
-        self.ff_thread.finished_fail.connect(
-            lambda e: self._toast(f"FFmpeg install failed: {e}")
-        )  # CHANGED
-        self.ff_thread.start()
-
-    def _check_ytdlp_updates(self):
-        self._toast("Checking for yt-dlp updates...")  # CHANGED
-        self.yt_thread = YtDlpUpdateWorker(self.settings.ytdlp.branch, check_only=True)
-        self.yt_thread.status.connect(self._toast)  # CHANGED
-        if self.settings.ytdlp.auto_update:
-            # perform update
-            self.yt_thread.check_only = False
-        self.yt_thread.finished.connect(lambda: None)
-        self.yt_thread.start()
-
-    def _show_update_prompt(self, remote_ver: str, local_ver: str) -> bool:
-        from PyQt6.QtWidgets import QMessageBox
-
-        accent = self.settings.ui.accent_color_hex or "#F28C28"
-        box = QMessageBox(self)
-        box.setWindowTitle("New Update Found!")
-        box.setText(f"Version {local_ver} \u2192 {remote_ver}\n\nUpdate now?")
-        box.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        box.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        box.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        # CHANGED: single border around the entire window, no inner borders
-        box.setStyleSheet(
-            f"""
-            QMessageBox {{
-                background-color: rgba(25,25,28,230);
-                border: 3px solid white;           /* window border */
-                border-radius: 12px;
-                color: #ffffff;
-                padding: 12px;
-            }}
-            QMessageBox QLabel {{
-                color: #ffffff;
-                font-weight: 600;
-                font-size: 14px;
-            }}
-            QMessageBox QPushButton {{
-                background: transparent;
-                border: 1px solid {accent};
-                color: #ffffff;
-                padding: 6px 12px;
-                border-radius: 6px;
-            }}
-            QMessageBox QPushButton:hover {{
-                background: {accent}22;
-            }}
-            """
-        )
+        self._deps_installing_ff = True
         try:
-            box.setWindowOpacity(0.98)
+            self.step1.set_next_enabled(False, "Installing FFmpeg...")
         except Exception:
             pass
-        return box.exec() == QMessageBox.StandardButton.Yes
+        self._begin_init("Installing FFmpeg...")
+        self._toast("FFmpeg not found. Downloading...")
+        self.ff_thread = FfmpegInstaller(self)
+        self.ff_thread.progress.connect(
+            lambda p: (
+                self._toast(f"Downloading FFmpeg... {p}%"),
+                self._update_init(f"Downloading FFmpeg... {p}%"),
+            )
+        )
+
+        def _ff_ok(_path: str):
+            self._deps_installing_ff = False
+            self._toast("FFmpeg ready")
+            self._end_init()
+            try:
+                self.step1.set_next_enabled(True, "")
+            except Exception:
+                pass
+
+        def _ff_fail(err: str):
+            self._deps_installing_ff = False
+            self._toast(f"FFmpeg install failed: {err}")
+            self._end_init()
+
+        self.ff_thread.finished_ok.connect(_ff_ok)
+        self.ff_thread.finished_fail.connect(_ff_fail)
+        self.ff_thread.start()
+
+    def _ensure_ytdlp(self):
+        # If no yt-dlp binary exists, fetch it. While installing, disable Next.
+        from core.update import YtDlpUpdateWorker, YTDLP_EXE
+
+        if os.path.exists(YTDLP_EXE):
+            return
+        self._deps_installing_ytdlp = True
+        try:
+            self.step1.set_next_enabled(False, "Installing yt-dlp...")
+        except Exception:
+            pass
+        self._begin_init("Installing yt-dlp...")
+        self._toast("Installing yt-dlp...")
+        self.yt_thread = YtDlpUpdateWorker(
+            branch=self.settings.ytdlp.branch, check_only=False
+        )
+
+        def _status(msg: str):
+            self._toast(msg)
+            self._update_init(msg)
+
+        def _after():
+            # This worker only emits status; verify presence and re-enable Next
+            self._deps_installing_ytdlp = False
+            ready = False
+            try:
+                from core.update import YTDLP_EXE
+
+                ready = os.path.exists(YTDLP_EXE)
+            except Exception:
+                pass
+            self._end_init()
+            try:
+                self.step1.set_next_enabled(
+                    bool(ready), "" if ready else "yt-dlp install failed"
+                )
+            except Exception:
+                pass
+
+        self.yt_thread.status.connect(_status)
+        self.yt_thread.finished.connect(_after)
+        self.yt_thread.start()
+
+    def _check_ytdlp_updates(self, startup: bool = False):
+        if startup:
+            self._begin_init("Checking for yt-dlp updates...")
+        self._toast("Checking for yt-dlp updates...")
+        self.yt_thread = YtDlpUpdateWorker(self.settings.ytdlp.branch, check_only=True)
+        self.yt_thread.status.connect(
+            lambda s: (self._toast(s), self._update_init(s) if startup else None)
+        )
+        if self.settings.ytdlp.auto_update:
+            self.yt_thread.check_only = False
+        self.yt_thread.finished.connect(lambda: (self._end_init() if startup else None))
+        self.yt_thread.start()
+
+    def _show_update_prompt(
+        self, remote_ver: str, local_ver: str, changelog_md: str | None
+    ) -> bool:
+        # Win11-like, keep native border/title
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Update Available")
+        dlg.setModal(True)
+
+        accent = self.settings.ui.accent_color_hex or "#F28C28"
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        # Header: versions
+        header = QHBoxLayout()
+        header.setSpacing(10)
+
+        lhs = QVBoxLayout()
+        lhs.setSpacing(2)
+        lbl_cur = QLabel(f"Current version: {local_ver or 'Unknown'}")
+        lbl_new = QLabel(f"Updating to: {remote_ver or 'Unknown'}")
+        lbl_new.setStyleSheet(f"color: {accent}; font-weight: 800;")
+        lhs.addWidget(lbl_cur)
+        lhs.addWidget(lbl_new)
+        header.addLayout(lhs, 1)
+
+        root.addLayout(header)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        root.addWidget(sep)
+
+        # Changelog area with markdown support
+        lbl_changes = QLabel("Changelog")
+        lbl_changes.setStyleSheet(f"font-weight: 800; font-size: 25px;")
+        root.addWidget(lbl_changes)
+
+        view = QTextBrowser()
+        view.setOpenExternalLinks(True)
+        view.setStyleSheet(
+            "QTextBrowser { background: #1e1f22; border: 1px solid #34353b; border-radius: 8px; padding: 8px; }"
+        )
+        text = changelog_md or "_No changelog provided._"
+        try:
+            view.setMarkdown(text)
+        except Exception:
+            view.setPlainText(text)
+        view.setMinimumSize(520, 280)
+        root.addWidget(view, 1)
+
+        # Buttons
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.No | QDialogButtonBox.StandardButton.Yes
+        )
+        btn_update = btns.button(QDialogButtonBox.StandardButton.Yes)
+        btn_update.setText("Update now")
+        btn_later = btns.button(QDialogButtonBox.StandardButton.No)
+        btn_later.setText("Later")
+
+        for b in (btn_update, btn_later):
+            b.setStyleSheet(
+                f"QPushButton {{ background: #2a2b30; border: 1px solid #33343a; border-radius: 8px; padding: 6px 12px; }}"
+                f"QPushButton:hover {{ border-color: {accent}; }}"
+            )
+        btn_update.setStyleSheet(
+            f"QPushButton {{ background: {accent}; color: #ffffff; border: 1px solid {accent}; border-radius: 8px; padding: 6px 12px; }}"
+            f"QPushButton:hover {{ filter: brightness(1.05); }}"
+        )
+
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        root.addWidget(btns)
+
+        return dlg.exec() == QDialog.DialogCode.Accepted
 
     def _check_app_updates(
         self,
@@ -567,22 +720,20 @@ class MainWindow(QMainWindow):
     ):
         do_update = (not check_only) and (self.settings.app.auto_update or force_update)
         channel = self.settings.app.channel
-        self._toast("Checking app updates...")  # CHANGED
+        self._toast("Checking app updates...")
         self.app_up_thread = AppUpdateWorker(APP_REPO, channel, APP_VERSION, do_update)
-        self.app_up_thread.status.connect(self._toast)  # CHANGED
+        self.app_up_thread.status.connect(self._toast)
 
         if prompt_on_available:
 
-            def _on_available(remote: str, local: str):
-                if self._show_update_prompt(remote, local):
-                    # Run full update regardless of auto_update setting
+            def _on_available_details(remote: str, local: str, body_md: str):
+                if self._show_update_prompt(remote, local, body_md or ""):
                     self._check_app_updates(
-                        check_only=False,
-                        prompt_on_available=False,
-                        force_update=True,  # CHANGED
+                        check_only=False, prompt_on_available=False, force_update=True
                     )
 
-            self.app_up_thread.available.connect(_on_available)
+            # Subscribe only to the detailed signal to avoid double prompts
+            self.app_up_thread.availableDetails.connect(_on_available_details)
 
         def _after(updated: bool):
             if updated:
@@ -592,7 +743,6 @@ class MainWindow(QMainWindow):
                 if os.path.isdir(staging):
                     pid = os.getpid()
                     exe = sys.executable
-                    # Build elevated PowerShell one-liner
                     ps_cmd = (
                         f"$pid={pid};"
                         f"Start-Process -Verb RunAs powershell -ArgumentList "
@@ -603,7 +753,6 @@ class MainWindow(QMainWindow):
                         f"Start-Process -FilePath '{exe}'\""
                     )
                     try:
-                        # Spawn updater and exit current app
                         import subprocess
 
                         subprocess.Popen(
@@ -611,7 +760,6 @@ class MainWindow(QMainWindow):
                             shell=False,
                         )
                     except Exception:
-                        # Fallback: try non-elevated copy (may fail), then restart
                         try:
                             import shutil
 
@@ -647,7 +795,6 @@ class MainWindow(QMainWindow):
         is_playlist = len(self.stepper._labels) == 4
         self.stepper.set_current(2 if is_playlist else 1)
 
-    # NEW: only show toasts when window is active (avoid always-on-top feel)
     def _toast(self, msg: str):
         try:
             if self.isMinimized() or not self.isActiveWindow():
@@ -656,30 +803,58 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # NEW: migrate old settings to new schema safely
     def _migrate_settings(self):
         try:
             ui = self.settings.ui
             app = self.settings.app
-            # Introduce auto_clear_on_success; default to legacy clear_input_after_fetch
+            # Ensure unified flag exists (legacy mapping handled in SettingsManager.load)
             if not hasattr(ui, "auto_clear_on_success"):
-                setattr(
-                    ui,
-                    "auto_clear_on_success",
-                    bool(getattr(ui, "clear_input_after_fetch", False)),
-                )
-            # Ensure check_on_launch exists
+                setattr(ui, "auto_clear_on_success", True)
             if not hasattr(app, "check_on_launch"):
                 setattr(app, "check_on_launch", False)
-            # Persist any additions
             self.settings_mgr.save(self.settings)
+        except Exception:
+            pass
+
+    def _begin_init(self, msg: str):
+        try:
+            self._init_ops += 1
+            if self._init_dialog is None:
+                d = QProgressDialog(self)
+                d.setWindowTitle("Initializing")
+                d.setLabelText(msg or "Please wait…")
+                d.setRange(0, 0)  # busy
+                d.setCancelButton(None)
+                d.setModal(True)
+                d.setMinimumWidth(360)
+                self._init_dialog = d
+                d.show()
+            else:
+                self._init_dialog.setLabelText(msg or "Please wait…")
+        except Exception:
+            pass
+
+    def _update_init(self, msg: str):
+        try:
+            if self._init_dialog:
+                self._init_dialog.setLabelText(msg or "Please wait…")
+        except Exception:
+            pass
+
+    def _end_init(self):
+        try:
+            self._init_ops = max(0, self._init_ops - 1)
+            if self._init_ops == 0 and self._init_dialog:
+                self._init_dialog.hide()
+                self._init_dialog.deleteLater()
+                self._init_dialog = None
         except Exception:
             pass
 
 
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    app = CrashSafeApplication(sys.argv)  # use crash-safe app
+    app = CrashSafeApplication(sys.argv)
     try:
         if hasattr(Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
             app.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)

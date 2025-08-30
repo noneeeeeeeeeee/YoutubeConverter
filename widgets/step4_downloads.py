@@ -1,7 +1,7 @@
 import os
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QWidget,
@@ -67,6 +67,28 @@ class Step4DownloadsWidget(QWidget):
     allFinished = pyqtSignal()
     backRequested = pyqtSignal()
 
+    class _ThumbWorker(QThread):
+        done = pyqtSignal(str, QPixmap)  # video_url, pixmap
+
+        def __init__(self, video_url: str, thumb_url: str, parent=None):
+            super().__init__(parent)
+            self.vurl = video_url
+            self.turl = thumb_url
+
+        def run(self):
+            try:
+                import requests
+
+                r = requests.get(self.turl, timeout=8)
+                if not r.ok:
+                    return
+                px = QPixmap()
+                if px.loadFromData(r.content):
+                    # ensure we emit original pixmap; scaling is done in UI thread
+                    self.done.emit(self.vurl, px)
+            except Exception:
+                pass
+
     def __init__(self, settings: AppSettings):
         super().__init__()
         self.settings = settings
@@ -77,6 +99,7 @@ class Step4DownloadsWidget(QWidget):
         self.quality = "best"
         self.downloader: Optional[Downloader] = None
         self._meta_fetchers: dict[int, InfoFetcher] = {}
+        self._thumb_threads: List[Step4DownloadsWidget._ThumbWorker] = []  # NEW
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -154,27 +177,23 @@ class Step4DownloadsWidget(QWidget):
         for idx, it in enumerate(self.items):
             title = it.get("title") or "Untitled"
             w = DownloadItemWidget(title)
-            # Thumb (preserve aspect)
+            # Async thumb fetch
+            vurl = (it.get("webpage_url") or it.get("url")) or ""
             thumb_url = it.get("thumbnail") or (it.get("thumbnails") or [{}])[-1].get(
                 "url"
             )
-            if thumb_url:
-                try:
-                    import requests
-
-                    r = requests.get(thumb_url, timeout=6)
-                    if r.ok:
-                        pix = QPixmap()
-                        if pix.loadFromData(r.content):
-                            w.thumb.setPixmap(
-                                pix.scaled(
-                                    w.thumb.size(),
-                                    Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation,
-                                )
-                            )  # CHANGED
-                except Exception:
-                    pass
+            if thumb_url and vurl:
+                worker = Step4DownloadsWidget._ThumbWorker(vurl, thumb_url, self)
+                worker.done.connect(self._set_dl_thumb_if_match)
+                worker.finished.connect(
+                    lambda w=worker: (
+                        self._thumb_threads.remove(w)
+                        if w in self._thumb_threads
+                        else None
+                    )
+                )
+                self._thumb_threads.append(worker)
+                worker.start()
             item = QListWidgetItem()
             item.setSizeHint(w.full_size_hint())  # CHANGED: keep height stable
             self.list.addItem(item)
@@ -271,6 +290,25 @@ class Step4DownloadsWidget(QWidget):
             self.btn_start.setText("Resume")
 
     def start_downloads(self):
+        # Do not start unless FFmpeg is available
+        try:
+            import shutil
+
+            ff_ready = os.path.exists(FF_EXE) or (shutil.which("ffmpeg") is not None)
+        except Exception:
+            ff_ready = False
+        if not ff_ready:
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+
+                QMessageBox.information(
+                    self,
+                    "Please wait",
+                    "FFmpeg is still installing. Try again when finished.",
+                )
+            except Exception:
+                pass
+            return
         if not self.items:
             return
         base = self.lbl_dir.text()
@@ -404,3 +442,22 @@ class Step4DownloadsWidget(QWidget):
         self.btn_start.setText("Start")  # NEW: ensure label is correct after reset
         self.btn_start.setEnabled(False)
         self.btn_done.setVisible(False)
+
+    # NEW: apply a thumbnail to the matching list widget by video URL
+    def _set_dl_thumb_if_match(self, video_url: str, pix: QPixmap):
+        try:
+            for i, it in enumerate(self.items):
+                u = (it.get("webpage_url") or it.get("url")) or ""
+                if u == video_url:
+                    w = self._get_widget(i)
+                    if w:
+                        w.thumb.setPixmap(
+                            pix.scaled(
+                                w.thumb.size(),
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation,
+                            )
+                        )
+                    break
+        except Exception:
+            pass

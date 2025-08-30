@@ -1,16 +1,13 @@
 import os
-import sys
 from typing import Dict, List, Optional, Callable
-from threading import Event  # added
-
+from threading import Event
 from PyQt6.QtCore import QThread, pyqtSignal
 import yt_dlp
 import subprocess
 import requests
-import json  # added
-from core.update import YTDLP_EXE  # NEW
+import json
+from core.update import YTDLP_EXE
 
-# Reuse common headers/extractor args across calls (NEW)
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.5",
@@ -21,16 +18,13 @@ EXTRACTOR_ARGS = {
 }
 
 
-def _win_no_window_kwargs():  # NEW
+def _win_no_window_kwargs():
     if os.name != "nt":
         return {}
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = 0
     return {"startupinfo": si, "creationflags": subprocess.CREATE_NO_WINDOW}
-
-
-# --- keep only media-related helpers below ---
 
 
 def build_ydl_opts(
@@ -43,7 +37,6 @@ def build_ydl_opts(
 ):
     outtmpl = os.path.join(base_dir, "%(title).200s [%(id)s].%(ext)s")
     postprocessors = []
-    # Normalize quality tokens
     q = (quality or "best").lower()
 
     def _parse_height(qv: str) -> Optional[int]:
@@ -59,7 +52,6 @@ def build_ydl_opts(
             return None
 
     if kind == "audio":
-        # Extract audio to target format
         postprocessors = [
             {
                 "key": "FFmpegExtractAudio",
@@ -74,7 +66,6 @@ def build_ydl_opts(
             format_selector = "bestaudio/best"
         merge_out = None
     else:
-        # Video selection, honoring container preference if mp4 requested
         height = _parse_height(q) if q != "best" else None
         if fmt.lower() == "mp4":
             if height:
@@ -89,8 +80,7 @@ def build_ydl_opts(
         else:
             if height:
                 format_selector = (
-                    f"bestvideo[height<={height}]+bestaudio/"
-                    f"best[height<={height}]/best"
+                    f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
                 )
             else:
                 format_selector = "bestvideo+bestaudio/best"
@@ -111,10 +101,8 @@ def build_ydl_opts(
         "socket_timeout": 15,
         "extractor_retries": 2,
         "skip_unavailable_fragments": True,
-        # Disable disk cache
         "cachedir": False,
-        "http_headers": HTTP_HEADERS,  # CHANGED
-        # Keep only player_client for downloads as before (no change in behavior)
+        "http_headers": HTTP_HEADERS,
         "extractor_args": {"youtube": {"player_client": ["tv"]}},
     }
     if progress_hook:
@@ -126,7 +114,7 @@ class InfoFetcher(QThread):
     finished_ok = pyqtSignal(dict)
     finished_fail = pyqtSignal(str)
 
-    def __init__(self, url: str, timeout_sec: int = 60):  # increase default timeout
+    def __init__(self, url: str, timeout_sec: int = 60):
         super().__init__()
         self.url = url
         self.timeout_sec = timeout_sec
@@ -169,7 +157,7 @@ class InfoFetcher(QThread):
 
         env = os.environ.copy()
         env["YTDLP_NO_PLUGINS"] = "1"
-        kwargs = _win_no_window_kwargs()  # CHANGED
+        kwargs = _win_no_window_kwargs()
         proc = subprocess.run(
             args,
             capture_output=True,
@@ -212,8 +200,7 @@ class InfoFetcher(QThread):
             self.finished_ok.emit(info)
         except subprocess.TimeoutExpired:
             self.finished_fail.emit("Timed out while fetching info")
-        except Exception as e:
-            # Fallback once via Python API without TV client (fixes “not available on this app”)
+        except Exception:
             try:
                 info = self._extract_with_python_api(use_tv_client=False)
                 self.finished_ok.emit(info)
@@ -222,11 +209,9 @@ class InfoFetcher(QThread):
 
 
 class Downloader(QThread):
-    itemProgress = pyqtSignal(
-        int, float, float, object  # index, percent, speed, eta (int or None)
-    )
-    itemStatus = pyqtSignal(int, str)  # index, status text
-    itemThumb = pyqtSignal(int, bytes)  # index, image bytes
+    itemProgress = pyqtSignal(int, float, float, object)
+    itemStatus = pyqtSignal(int, str)
+    itemThumb = pyqtSignal(int, bytes)
     finished_all = pyqtSignal()
 
     def __init__(
@@ -245,13 +230,11 @@ class Downloader(QThread):
         self.fmt = fmt
         self.ffmpeg_location = ffmpeg_location
         self.quality = quality or "best"
-        # Control
         self._pause_evt = Event()
-        self._pause_evt.set()  # running
+        self._pause_evt.set()
         self._stop = False
-        self._meta_threads: Dict[int, InfoFetcher] = {}  # idx -> fetcher
+        self._meta_threads: Dict[int, InfoFetcher] = {}
 
-    # External controls
     def pause(self):
         self._pause_evt.clear()
         for idx, _ in enumerate(self.items):
@@ -284,13 +267,11 @@ class Downloader(QThread):
             elif status == "finished":
                 self.itemStatus.emit(idx, "Processing...")
             elif status == "postprocessing":
-                # keep UI in processing (indeterminate)
                 self.itemStatus.emit(idx, "Processing...")
 
         return hook
 
     def run(self):
-        # Thumbs prefetch
         for idx, it in enumerate(self.items):
             thumb_url = (
                 (it.get("thumbnail") or it.get("thumbnails", [{}])[-1].get("url"))
@@ -299,15 +280,12 @@ class Downloader(QThread):
             )
             if thumb_url:
                 try:
-                    import requests
-
                     r = requests.get(thumb_url, timeout=10)
                     if r.ok:
                         self.itemThumb.emit(idx, r.content)
                 except Exception:
                     pass
 
-        # CHANGED: do not start or wait for metadata; download directly in order
         for idx, it in enumerate(self.items):
             if self._stop:
                 break
@@ -335,12 +313,9 @@ class Downloader(QThread):
                     self.itemStatus.emit(idx, "Stopped")
                     break
                 self.itemStatus.emit(idx, f"Error: {e}")
-
         self.finished_all.emit()
 
-    # Keep stubs (unused now)
     def _start_meta_fetch(self, idx: int, url: str):
-        # Avoid duplicate starts
         if idx in self._meta_threads:
             return
         self.itemStatus.emit(idx, "Fetching metadata...")
@@ -348,9 +323,7 @@ class Downloader(QThread):
 
         def _ok(meta: dict, i=idx):
             try:
-                # Merge metadata
                 self.items[i] = {**self.items[i], **(meta or {})}
-                # Emit new thumbnail if available
                 thumb_url = self.items[i].get("thumbnail") or (
                     self.items[i].get("thumbnails") or [{}]
                 )[-1].get("url")
@@ -376,11 +349,10 @@ class Downloader(QThread):
         f.start()
 
     def _needs_metadata(self, it: dict) -> bool:
-        # Heuristic: fast-paste placeholders usually have only url/title and lack id/thumbnail
         if not it:
             return True
         if not it.get("url") and not it.get("webpage_url"):
-            return False  # invalid item handled elsewhere
+            return False
         has_core = (
             bool(it.get("id")) or bool(it.get("duration")) or bool(it.get("extractor"))
         )
@@ -388,7 +360,6 @@ class Downloader(QThread):
         return not (has_core and has_thumb)
 
     def _extract_info_quick(self, url: str) -> dict:
-        # Lightweight metadata extraction (no download), cache disabled
         ydl_opts = {
             "quiet": True,
             "skip_download": True,
@@ -402,29 +373,14 @@ class Downloader(QThread):
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url, download=False)
-        # Heuristic: fast-paste placeholders usually have only url/title and lack id/thumbnail
+
+    def _needs_metadata(self, it: dict) -> bool:
         if not it:
             return True
         if not it.get("url") and not it.get("webpage_url"):
-            return False  # invalid item handled elsewhere
+            return False
         has_core = (
             bool(it.get("id")) or bool(it.get("duration")) or bool(it.get("extractor"))
         )
         has_thumb = bool(it.get("thumbnail")) or bool(it.get("thumbnails"))
         return not (has_core and has_thumb)
-
-    def _extract_info_quick(self, url: str) -> dict:
-        # Lightweight metadata extraction (no download), cache disabled
-        ydl_opts = {
-            "quiet": True,
-            "skip_download": True,
-            "noprogress": True,
-            "noplaylist": False,
-            "socket_timeout": 15,
-            "extractor_retries": 1,
-            "cachedir": False,
-            "http_headers": HTTP_HEADERS,
-            "extractor_args": EXTRACTOR_ARGS,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=False)

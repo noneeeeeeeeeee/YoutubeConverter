@@ -24,12 +24,12 @@ class UISettings:
     accent_color_hex: str = "#F28C28"
     auto_fetch_urls: bool = True
     auto_search_text: bool = True
-    clear_input_after_fetch: bool = True
     live_search: bool = True
     search_debounce_seconds: int = 3
     fast_paste_enabled: bool = True
     quality_refetch_seconds: int = 1
     background_metadata_enabled: bool = True
+    auto_clear_on_success: bool = True
 
 
 # Hidden (For first start only)
@@ -67,7 +67,6 @@ class AppSettings:
 
 class SettingsManager:
     def load(self) -> AppSettings:
-        # Migrate from legacy path if needed
         if not os.path.exists(SETTINGS_PATH) and os.path.exists(LEGACY_SETTINGS_PATH):
             try:
                 os.makedirs(SETTINGS_DIR, exist_ok=True)
@@ -83,8 +82,19 @@ class SettingsManager:
         try:
             with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Migrate/merge
-            ui = UISettings(**data.get("ui", {}))
+
+            # Migrate/merge (sanitize deprecated fields)
+            ui_raw = (data.get("ui") or {}).copy()
+            if (
+                "auto_clear_on_success" not in ui_raw
+                and "clear_input_after_fetch" in ui_raw
+            ):
+                ui_raw["auto_clear_on_success"] = bool(
+                    ui_raw.get("clear_input_after_fetch")
+                )
+            ui_raw.pop("clear_input_after_fetch", None)  # drop deprecated
+
+            ui = UISettings(**ui_raw)
             defaults = DefaultsSettings(**data.get("defaults", {}))
             ytdlp = YtDlpSettings(**data.get("ytdlp", {}))
             app = AppUpdateSettings(**data.get("app", {}))
@@ -103,5 +113,7 @@ class SettingsManager:
     def save(self, settings: AppSettings):
         data = asdict(settings)
         os.makedirs(SETTINGS_DIR, exist_ok=True)
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)

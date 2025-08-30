@@ -3,11 +3,10 @@ import sys
 import subprocess
 import requests
 import zipfile
-from typing import Optional
-
-from PyQt6.QtCore import QThread, pyqtSignal
-import logging
 import time
+import logging
+from typing import Optional
+from PyQt6.QtCore import QThread, pyqtSignal
 
 
 if getattr(sys, "frozen", False):
@@ -43,7 +42,7 @@ def get_latest_release_info(branch: str) -> dict:
     return {"repo": repo, "api": api, "download_url": dl, "tag": tag}
 
 
-def _hidden_subprocess_kwargs():  # NEW
+def _hidden_subprocess_kwargs():
     kwargs = {}
     if os.name == "nt":
         si = subprocess.STARTUPINFO()
@@ -140,6 +139,7 @@ class AppUpdateWorker(QThread):
     status = pyqtSignal(str)
     updated = pyqtSignal(bool)
     available = pyqtSignal(str, str)
+    availableDetails = pyqtSignal(str, str, str)
 
     def __init__(self, repo: str, channel: str, current_version: str, do_update: bool):
         super().__init__()
@@ -178,12 +178,10 @@ class AppUpdateWorker(QThread):
                 self.status.emit(f"GitHub API error: {e}")
                 return None
 
-        # Nightly: try release-by-tag first, then fallback to tags list
         if self.channel == "nightly":
             rel = _get(f"{base}/tags/nightly")
             if rel:
                 return rel
-            # Fallback: tags endpoint
             tags = (
                 _get(f"https://api.github.com/repos/{self.repo}/tags?per_page=100")
                 or []
@@ -193,12 +191,9 @@ class AppUpdateWorker(QThread):
             )
             if not tag:
                 return None
-            # Try resolving the tag to a release (if a Release exists for that tag)
             rel = _get(f"{base}/tags/{tag.get('name')}")
-            # If still none, return a minimal dict so callers can at least show availability
             return rel or {"tag_name": tag.get("name"), "assets": []}
 
-        # Non-nightly: list releases
         rels = _get(base) or []
         if rels:
             if self.channel == "release":
@@ -220,25 +215,20 @@ class AppUpdateWorker(QThread):
             else:
                 return rels[0]
 
-        # Fallback when there are no Releases objects: try tags
         tags = _get(f"https://api.github.com/repos/{self.repo}/tags?per_page=100") or []
         if not tags:
             return None
-        # Prefer version-like tags for release channel
         if self.channel == "release":
             ver = next(
                 (t for t in tags if (t.get("name") or "").lower().startswith("v")), None
             )
             chosen = ver or tags[0]
         elif self.channel == "prerelease":
-            # No strict rule; take first non-nightly tag
             chosen = next(
                 (t for t in tags if (t.get("name") or "").lower() != "nightly"), tags[0]
             )
         else:
             chosen = tags[0]
-
-        # Try resolve tag to a release (if one exists); if not, return minimal info
         rel = _get(f"{base}/tags/{chosen.get('name')}")
         return rel or {"tag_name": chosen.get("name"), "assets": []}
 
@@ -269,12 +259,6 @@ class AppUpdateWorker(QThread):
 
     @staticmethod
     def _normalize_version(v: str) -> str:
-        """
-        Normalize version strings for comparison:
-        - Trim whitespace
-        - Drop leading 'v' (common in tags) when followed by a digit
-        - Lower-case for stability
-        """
         if not v:
             return ""
         s = v.strip()
@@ -312,14 +296,58 @@ class AppUpdateWorker(QThread):
                     self.status.emit(
                         f"Update available {raw_local_ver or local_ver} -> {raw_remote_ver or remote_ver} [{self.channel}]"
                     )
-                    self.available.emit(
-                        raw_remote_ver or remote_ver, raw_local_ver or local_ver
-                    )  # NEW
+                    body_md = rel.get("body") or ""
+                    # Emit only one detailed signal to prevent duplicate prompts
+                    self.availableDetails.emit(
+                        raw_remote_ver or remote_ver,
+                        raw_local_ver or local_ver,
+                        body_md,
+                    )
                 else:
                     self.status.emit(f"Update check complete [{self.channel}]")
                 self.updated.emit(False)
                 return
             asset = self._pick_zip_asset(rel)
+            if not asset:
+                self.status.emit("No zip asset found in release.")
+                self.updated.emit(False)
+                return
+
+            url = asset.get("browser_download_url")
+            name = asset.get("name") or "update.zip"
+            self.status.emit(f"Downloading {name}...")
+            os.makedirs(STAGING_DIR, exist_ok=True)
+            tmp_zip = os.path.join(STAGING_DIR, "_update_tmp.zip")
+            with requests.get(url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(tmp_zip, "wb") as f:
+                    for chunk in r.iter_content(256 * 1024):
+                        if chunk:
+                            f.write(chunk)
+
+            self.status.emit("Preparing update...")
+            for root, dirs, files in os.walk(STAGING_DIR):
+                for fn in files:
+                    if fn != "_update_tmp.zip":
+                        try:
+                            os.remove(os.path.join(root, fn))
+                        except Exception:
+                            pass
+            self._extract_zip_flat(tmp_zip, STAGING_DIR)
+            try:
+                os.remove(tmp_zip)
+            except Exception:
+                pass
+            try:
+                with open(os.path.join(STAGING_DIR, ".pending"), "w") as f:
+                    f.write(remote_ver or "")
+            except Exception:
+                pass
+            self.status.emit("Update ready. It will be applied on restart.")
+            self.updated.emit(True)
+        except Exception as e:
+            self.status.emit(f"App update failed: {e}")
+            self.updated.emit(False)
             if not asset:
                 self.status.emit("No zip asset found in release.")
                 self.updated.emit(False)
@@ -421,6 +449,9 @@ if __name__ == "__main__":
         if remaining < 10:
             logger.warning("GitHub API rate limit is low!")
             print("WARNING: GitHub API rate limit is low!")
+    except Exception as e:
+        logger.error(f"Failed to check rate limit: {e}")
+        print(f"ERROR: Failed to check rate limit: {e}")
     except Exception as e:
         logger.error(f"Failed to check rate limit: {e}")
         print(f"ERROR: Failed to check rate limit: {e}")

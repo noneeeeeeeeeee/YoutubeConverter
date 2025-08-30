@@ -98,7 +98,9 @@ class SettingsPage(QWidget):
             self.cmb_app_behavior.setCurrentIndex(0)
         frm_app.addRow("On launch behavior", self.cmb_app_behavior)
         self.cmb_app_channel = QComboBox()
-        self.cmb_app_channel.addItems(["release", "prerelease", "nightly"])
+        self.cmb_app_channel.addItems(
+            ["release", "nightly"]
+        )  # disabled prelease option for now , "prerelease"
         self.cmb_app_channel.setCurrentText(settings.app.channel)
         frm_app.addRow("Update channel", self.cmb_app_channel)
         self.btn_app_check = QPushButton("Check app update")

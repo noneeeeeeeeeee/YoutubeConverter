@@ -1,49 +1,101 @@
-<p align="center">
-<img src="YTConverterIcon.png" width="300" alt="Logo">
-</p>
-<div align="center">
+# YouTube Converter
+
+A modern YouTube video/audio downloader built with Flutter and Material 3 Expressive design.
 
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/vendouple/YoutubeConverter/.github%2Fworkflows%2Fbuilder.yml)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/vendouple/YoutubeConverter/total)
 
-</div>
-
-# YouTube Converter
-> [!NOTE]  
-> Youtube Converter bug fixes and feature updates will be implemented very slowly. On a future note, I will be migrating this app away from PyQt6 to a faster framework like C for the backend and html for easy sytling in the frontend.
-> Features like Cutting, Bulk Converting. Will not be implemented with this framework. So expect v3 to come out in a very long time.
-
-
-Convert YouTube videos to audio or video on Windows with a simple, modern UI. Built with PyQt6 + yt-dlp + ffmpeg.
-
 ## Features
-- EZ Mode (fast paste → sanitize radio links → one-click download)
-- Advanced Mode (quality selection, multiple queued items)
-- URL normalization (radio/playlist → single watch URL when desired)
-- Theme modes: System, Light, Dark, OLED (true black)
-- Notifications with tuned durations:
-  - Info ≈ 30s
-  - Success ≈ 10s
-  - Fail ≥ 60s or sticky until dismissed, with FAQ link
 
-## Settings and updates
+### ✨ Modern UI
 
-- Theme: Light/Dark/OLED (applies immediately and persists across restarts)
-- EZ Mode: hides advanced controls, sanitizes radio links to single videos
-- Updates (Settings → Updates):
-  - App updates: schedule + action (No Check, Prompt, Auto)
-  - yt-dlp updates: enable/disable + cadence
+- **Material 3 Expressive Design**: Following Google's latest design guidelines
+- **Dark/Light/OLED Themes**: Choose your preferred theme mode
+- **Customizable Accent Colors**: Personalize the app with your favorite color
+- **Responsive Layout**: Works on desktop and mobile devices
 
-## Notifications
+### 🚀 Core Features
 
-- Info and Success auto-dismiss; Fail stays longer or until dismissed
-- Fail notifications link to the in-app FAQ
+- **YouTube Video/Audio Download**: Download videos or extract audio
+- **Multiple Format Support**: MP3, M4A, OPUS, WAV, FLAC, MP4, WebM, MKV
+- **Quality Selection**: Choose from best quality or specific bitrates/resolutions
+- **Playlist Support**: Download individual videos or entire playlists
+- **Batch Downloads**: Queue multiple downloads simultaneously
 
-## Logs and troubleshooting
+### 🔧 Advanced Features
 
-- Logs are written under %AppData%/YoutubeConverter/logs
-- Use Settings → Export Logs to zip recent logs for sharing
+- **SponsorBlock Integration**: Automatically remove sponsored segments
+- **Subtitle Download**: Download video subtitles in multiple languages
+- **Auto-Update**: Keep the app and yt-dlp up to date automatically
+- **EZ Mode**: Simplified interface for quick downloads
 
-## FAQ
+### 📱 Platform Support
 
-- In-app: Help → FAQ (common errors and decisions like resume behavior)
+| Platform | Status       |
+| -------- | ------------ |
+| Windows  | ✅ Supported |
+| macOS    | ✅ Supported |
+| Linux    | ✅ Supported |
+| Android  | 🚧 Planned   |
+
+## Getting Started
+
+### Prerequisites
+
+- Flutter SDK 3.0.6 or higher
+- Dart SDK 3.0.6 or higher
+
+### Installation
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/vendouple/YoutubeConverter.git
+cd YoutubeConverter
+```
+
+2. Install dependencies:
+
+```bash
+flutter pub get
+```
+
+3. Run the app:
+
+```bash
+flutter run
+```
+
+### Building
+
+```bash
+# Windows
+flutter build windows --release
+
+# macOS
+flutter build macos --release
+
+# Linux
+flutter build linux --release
+```
+
+## Migration from PyQt6
+
+This Flutter app is a complete rewrite of the original PyQt6 application. Key improvements:
+
+1. **Cross-platform support**: Now runs on Windows, macOS, Linux, and potentially Android
+2. **Modern UI**: Material 3 Expressive design with smooth animations
+3. **Better performance**: Flutter's compiled nature provides better performance
+4. **Easier maintenance**: Dart's sound null safety and Flutter's hot reload
+5. **Smaller bundle size**: Flutter compiles to native code
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Acknowledgments
+
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) - The core download engine
+- [FFmpeg](https://ffmpeg.org/) - Media processing
+- [Flutter](https://flutter.dev/) - UI framework
+- [Material Design 3](https://m3.material.io/) - Design system
